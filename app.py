@@ -7,7 +7,7 @@ from openai import OpenAI
 
 st.set_page_config(page_title="医药法规智能翻译 Agent", page_icon="💊", layout="centered")
 
-# ==================== 界面样式优化（左右气泡对话） ====================
+# ==================== 界面样式优化 ====================
 st.markdown("""
 <style>
 div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarUser"]) {
@@ -36,7 +36,13 @@ div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarAssista
 def load_config():
     default_cfg = {
         "api_config": {
-            "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+            "active_env": "Gemini 原生接口 (默认)",
+            "envs": {
+                "Gemini 原生接口 (默认)": {
+                    "url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+                    "key": ""
+                }
+            },
             "current_model": "gemini-2.5-flash"
         },
         "skills": {}
@@ -44,7 +50,15 @@ def load_config():
     if os.path.exists("config.json"):
         try:
             with open("config.json", "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+                # 兼容旧版本配置自动升级
+                if "envs" not in data.get("api_config", {}):
+                    old_url = data.get("api_config", {}).get("base_url", "https://generativelanguage.googleapis.com/v1beta/openai/")
+                    data["api_config"] = default_cfg["api_config"]
+                    if old_url != "https://generativelanguage.googleapis.com/v1beta/openai/":
+                        data["api_config"]["envs"]["自定义历史接口"] = {"url": old_url, "key": ""}
+                        data["api_config"]["active_env"] = "自定义历史接口"
+                return data
         except Exception:
             return default_cfg
     return default_cfg
@@ -55,17 +69,18 @@ def save_config(config_data):
 
 config = load_config()
 
-# 初始化全局会话状态 (API 部分)
-if "api_key" not in st.session_state:
-    st.session_state.api_key = ""
-if "base_url" not in st.session_state:
-    st.session_state.base_url = config.get("api_config", {}).get("base_url", "https://generativelanguage.googleapis.com/v1beta/openai/")
-if "available_models" not in st.session_state:
-    st.session_state.available_models = [config.get("api_config", {}).get("current_model", "gemini-2.5-flash")]
+# === 初始化 API 环境状态 ===
+api_cfg = config.get("api_config", {})
+if "api_envs" not in st.session_state:
+    st.session_state.api_envs = api_cfg.get("envs", {})
+if "active_env" not in st.session_state:
+    st.session_state.active_env = api_cfg.get("active_env", "Gemini 原生接口 (默认)")
 if "selected_model" not in st.session_state:
-    st.session_state.selected_model = config.get("api_config", {}).get("current_model", "gemini-2.5-flash")
+    st.session_state.selected_model = api_cfg.get("current_model", "gemini-2.5-flash")
+if "available_models" not in st.session_state:
+    st.session_state.available_models = [st.session_state.selected_model]
 
-# 初始化全局会话状态 (多模板 Skill 部分)
+# === 初始化 Skill 状态 ===
 skills_cfg = config.get("skills", {})
 if "translator_profiles" not in skills_cfg:
     st.session_state.translator_profiles = {"默认初译规则": skills_cfg.get("regulatory_translator", "You are an expert regulatory translator specializing in life sciences, pharmacological, and clinical documents. Your translations must strictly adhere to ICH, FDA, and CDE terminologies and formatting standards.")}
@@ -81,17 +96,25 @@ else:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# ==================== 通用 API 模型获取 ====================
+# ==================== 通用 API 模型获取 (增强过滤) ====================
 def fetch_openai_models(api_key, base_url):
     try:
         client = OpenAI(api_key=api_key, base_url=base_url)
         models_page = client.models.list()
         
         models = []
+        excluded_keywords = [
+            "embedding", "tts", "whisper", "dall-e", "image", "vision", "audio", 
+            "aqa", "realtime", "moderation", "instruct", "babbage", "davinci", 
+            "curie", "ada", "search", "similarity", "text-", "rerank", "question"
+        ]
+        
         for m in models_page.data:
-            if any(kw in m.id.lower() for kw in ["embedding", "tts", "whisper", "dall-e", "image", "vision", "audio"]):
+            name = m.id.lower()
+            if any(kw in name for kw in excluded_keywords):
                 continue
-            models.append(m.id)
+            clean_id = m.id.replace("models/", "")
+            models.append(clean_id)
             
         models = sorted(list(set(models)), reverse=True)
         return True, models if models else ["未获取到文本模型，请手动输入"]
@@ -101,13 +124,33 @@ def fetch_openai_models(api_key, base_url):
 # ==================== 设置弹窗 ====================
 @st.dialog("⚙️ 系统与模型配置", width="large")
 def show_settings_dialog():
-    st.markdown("#### 1. API 接口配置与模型探测")
-    url_input = st.text_input("接口地址 (Base URL)", value=st.session_state.base_url, placeholder="例如: https://api.openai.com/v1")
-    key_input = st.text_input("API 凭据 / 密码", value=st.session_state.api_key, type="password")
+    st.markdown("#### 1. API 接口与凭据管理")
     
-    col1, col2 = st.columns([1, 1])
-    with col1:
+    env_names = list(st.session_state.api_envs.keys())
+    current_env_idx = env_names.index(st.session_state.active_env) if st.session_state.active_env in env_names else 0
+    
+    col_env1, col_env2 = st.columns([1, 1])
+    with col_env1:
+        sel_env = st.selectbox("选择或切换接口环境", options=env_names, index=current_env_idx)
+    with col_env2:
         st.markdown("<br>", unsafe_allow_html=True)
+        new_env_name = st.text_input("➕ 另存为新接口 (选填)", placeholder="例如：公司内网代理", label_visibility="collapsed")
+        
+    # 判断当前正在编辑的目标环境
+    edit_target = new_env_name.strip() if new_env_name.strip() else sel_env
+    is_default = (edit_target == "Gemini 原生接口 (默认)")
+    
+    if is_default:
+        curr_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+    else:
+        curr_url = st.session_state.api_envs.get(edit_target, {}).get("url", "")
+    curr_key = st.session_state.api_envs.get(edit_target, {}).get("key", "")
+    
+    url_input = st.text_input("接口地址 (Base URL)", value=curr_url, disabled=is_default, help="原生接口地址已锁定保护。若需自定义，请在右上方新建接口。")
+    key_input = st.text_input("API 凭据 / 密码", value=curr_key, type="password", placeholder="凭据将密文保存在配置文件中...")
+    
+    col_btn1, col_btn2 = st.columns([1, 1])
+    with col_btn1:
         if st.button("🧪 测试连接并获取模型列表"):
             if not key_input.strip() or not url_input.strip():
                 st.warning("请确保填写了完整的地址和凭据")
@@ -115,19 +158,17 @@ def show_settings_dialog():
                 with st.spinner("正在连通接口..."):
                     success, result = fetch_openai_models(key_input.strip(), url_input.strip())
                     if success:
-                        st.session_state.api_key = key_input.strip()
-                        st.session_state.base_url = url_input.strip()
                         st.session_state.available_models = result
-                        st.success(f"✅ 验证成功！自动识别到 {len(result)} 个可用模型。")
+                        st.success(f"✅ 验证成功！获取到 {len(result)} 个可用模型。请在右侧选择并保存。")
                     else:
-                        st.error(f"❌ 自动拉取失败: {result}。您仍可在右侧手动输入模型名称。")
+                        st.error(f"❌ 拉取失败: {result}。您仍可在右侧手动输入模型名称。")
                         
     with col2:
         current_idx = 0
         if st.session_state.selected_model in st.session_state.available_models:
             current_idx = st.session_state.available_models.index(st.session_state.selected_model)
         selected = st.selectbox("从拉取列表中选择模型", options=st.session_state.available_models, index=current_idx)
-        manual_model = st.text_input("或手动输入指定模型名称 (覆盖上方选择)", value="", placeholder="例如: gpt-4o")
+        manual_model = st.text_input("或手动输入指定模型名称 (覆盖上方选择)", value="", placeholder="例如: deepseek-chat")
         final_model = manual_model.strip() if manual_model.strip() else selected
 
     st.markdown("---")
@@ -150,10 +191,12 @@ def show_settings_dialog():
         new_r_name = st.text_input("💾 另存为新审校模板 (选填)", placeholder="例如：严格 FDA 规范审校", key="new_r")
 
     if st.button("✅ 保存全部配置并生效", type="primary"):
-        st.session_state.api_key = key_input.strip()
-        st.session_state.base_url = url_input.strip()
+        # 保存 API 配置
+        st.session_state.api_envs[edit_target] = {"url": url_input.strip(), "key": key_input.strip()}
+        st.session_state.active_env = edit_target
         st.session_state.selected_model = final_model
         
+        # 保存 Skill 配置
         if new_t_name.strip():
             st.session_state.translator_profiles[new_t_name.strip()] = t_text
             st.session_state.active_t = new_t_name.strip()
@@ -170,7 +213,8 @@ def show_settings_dialog():
         
         new_config = {
             "api_config": {
-                "base_url": st.session_state.base_url,
+                "active_env": st.session_state.active_env,
+                "envs": st.session_state.api_envs,
                 "current_model": st.session_state.selected_model
             },
             "skills": {
@@ -190,17 +234,17 @@ with header_col1:
     st.title("💊 医药法规翻译 Agent")
 with header_col2:
     st.write("")
-    if st.button("⚙️ 设置", help="配置 API、模型与多模板 Skill"):
+    if st.button("⚙️ 设置", help="管理 API 接口、模型与多模板 Skill"):
         show_settings_dialog()
 
-# 显示当前激活的综合状态
-status_text = f"🌐 接口: `{st.session_state.base_url.split('://')[-1].split('/')[0]}` | 🤖 模型: `{st.session_state.selected_model}`"
-if st.session_state.api_key:
-    status_text += " | 🟢 凭据就绪"
+# ==================== 极简状态栏 ====================
+curr_active_key = st.session_state.api_envs.get(st.session_state.active_env, {}).get("key", "")
+if curr_active_key:
+    status_text = f"🟢 **接口**: `{st.session_state.active_env}` | 🤖 **模型**: `{st.session_state.selected_model}`"
 else:
-    status_text += " | 🔴 未配置凭据 (点击右上角 ⚙️ 设置)"
+    status_text = f"🔴 **未配置 API 凭据** (请点击右上角 ⚙️ 设置)"
 st.caption(status_text)
-st.caption(f"✍️ 当前生效规则 ➡️ **初译**: `{st.session_state.active_t}` | **审校**: `{st.session_state.active_r}`")
+st.caption(f"✍️ **当前规则** ➡️ 初译: `{st.session_state.active_t}` | 审校: `{st.session_state.active_r}`")
 
 # ==================== 翻译工作流 ====================
 def auto_detect_language(text):
@@ -240,16 +284,20 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-if prompt := st.chat_input("在此输入或粘贴需要翻译的临床/法规文本..."):
-    if not st.session_state.api_key or not st.session_state.base_url:
-        st.error("❌ 尚未配置 API 接口与凭据，请点击右上角【⚙️ 设置】进行配置。")
+if prompt := st.chat_input("在此输入需要翻译的临床/法规文本..."):
+    active_env_data = st.session_state.api_envs.get(st.session_state.active_env, {})
+    exec_key = active_env_data.get("key", "")
+    exec_url = active_env_data.get("url", "")
+    
+    if not exec_key or not exec_url:
+        st.error("❌ 当前选中的接口尚未配置凭据，请点击右上角【⚙️ 设置】进行完善。")
     else:
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
 
         with st.chat_message("assistant"):
-            with st.spinner(f"⏳ 正在通过 {st.session_state.base_url.split('://')[-1].split('/')[0]} 调用【{st.session_state.selected_model}】执行三阶段反思工作流..."):
+            with st.spinner(f"⏳ 正在通过【{st.session_state.active_env}】调用 {st.session_state.selected_model} 执行三阶段翻译..."):
                 try:
                     source_lang, target_lang, country = auto_detect_language(prompt)
                     
@@ -262,8 +310,8 @@ if prompt := st.chat_input("在此输入或粘贴需要翻译的临床/法规文
                         target_lang=target_lang,
                         country=country,
                         model=st.session_state.selected_model,
-                        api_key=st.session_state.api_key,
-                        base_url=st.session_state.base_url,
+                        api_key=exec_key,
+                        base_url=exec_url,
                         trans_skill=active_t_skill,
                         rev_skill=active_r_skill
                     )
