@@ -163,7 +163,7 @@ def show_settings_dialog():
                     else:
                         st.error(f"❌ 拉取失败: {result}。您仍可在右侧手动输入模型名称。")
                         
-    with col2:
+    with col_btn2:
         current_idx = 0
         if st.session_state.selected_model in st.session_state.available_models:
             current_idx = st.session_state.available_models.index(st.session_state.selected_model)
