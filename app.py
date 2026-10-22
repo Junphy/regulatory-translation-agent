@@ -1,1 +1,97 @@
-{"nbformat":4,"nbformat_minor":0,"metadata":{"colab":{"provenance":[],"authorship_tag":"ABX9TyNfdej9Ybkt/auLmc+ZfqfT"},"kernelspec":{"name":"python3","display_name":"Python 3"},"language_info":{"name":"python"}},"cells":[{"cell_type":"code","execution_count":null,"metadata":{"id":"HQGFvfaqehZl"},"outputs":[],"source":["import os\n","import json\n","import re\n","import gradio as gr\n","import translation_agent as ta\n","\n","# 加载配置\n","def load_config():\n","    with open(\"config.json\", \"r\", encoding=\"utf-8\") as f:\n","        return json.load(f)\n","\n","def save_config(model_name, trans_prompt, rev_prompt):\n","    config = {\n","        \"model_config\": {\"current_model\": model_name},\n","        \"skills\": {\n","            \"regulatory_translator\": trans_prompt,\n","            \"regulatory_reviewer\": rev_prompt\n","        }\n","    }\n","    with open(\"config.json\", \"w\", encoding=\"utf-8\") as f:\n","        json.dump(config, f, ensure_ascii=False, indent=4)\n","    return \"✅ 配置已实时更新！\"\n","\n","def auto_detect_language(text):\n","    chinese_chars = len(re.findall(r'[\\u4e00-\\u9fff]', text))\n","    if chinese_chars > 2 or (len(text.strip()) > 0 and chinese_chars / len(text.strip()) > 0.05):\n","        return \"Chinese\", \"English\", \"United States\"\n","    else:\n","        return \"English\", \"Chinese\", \"China\"\n","\n","def run_translation(text, api_key, model_choice):\n","    if not api_key.strip():\n","        return \"❌ 请先在左侧输入您的 Gemini API Key\"\n","    if not text.strip():\n","        return \"请输入需要翻译的文本。\"\n","\n","    # 设置运行时环境变量\n","    os.environ[\"OPENAI_API_KEY\"] = api_key\n","    os.environ[\"OPENAI_BASE_URL\"] = \"https://generativelanguage.googleapis.com/v1beta/openai/\"\n","\n","    # 动态修改底层 translation-agent 调用的模型\n","    utils_file = \"/usr/local/lib/python3.10/site-packages/translation_agent/utils.py\" # 根据实际路径调整\n","    if os.path.exists(utils_file):\n","        with open(utils_file, \"r\", encoding=\"utf-8\") as f:\n","            content = f.read()\n","        content = re.sub(r'model=\"[^\"]+\"', f'model=\"{model_choice}\"', content)\n","        with open(utils_file, \"w\", encoding=\"utf-8\") as f:\n","            f.write(content)\n","\n","    source_lang, target_lang, country = auto_detect_language(text)\n","\n","    try:\n","        translation = ta.translate(\n","            source_lang=source_lang,\n","            target_lang=target_lang,\n","            source_text=text,\n","            country=country\n","        )\n","        return f\"【识别方向: {source_lang} ➡️ {target_lang} | 使用模型: {model_choice}】\\n\\n{translation}\"\n","    except Exception as e:\n","        return f\"❌ 翻译出错: {str(e)}\"\n","\n","# 构建带侧边栏配置的管理端与翻译端一体化 UI\n","with gr.Blocks(theme=\"soft\") as demo:\n","    gr.Markdown(\"# 💊 医药法规智能翻译 Agent (多模型与 Skill 管理后台)\")\n","\n","    with gr.Row():\n","        with gr.Column(scale=1):\n","            gr.Markdown(\"### ⚙️ 系统与模型配置\")\n","            api_key_input = gr.Textbox(label=\"Gemini API Key\", type=\"password\", placeholder=\"输入您的 API Key...\")\n","            model_dropdown = gr.Dropdown(\n","                choices=[\"gemini-3.5-flash-lite\", \"gemini-1.5-pro\", \"gemini-1.5-flash\"],\n","                value=\"gemini-3.5-flash-lite\",\n","                label=\"选择驱动模型 (支持开放切换)\"\n","            )\n","\n","            gr.Markdown(\"### 🧠 医药 Skill 管理\")\n","            config_data = load_config()\n","            trans_skill_box = gr.Textbox(value=config_data[\"skills\"][\"regulatory_translator\"], label=\"Translator Skill (初译规范)\", lines=5)\n","            rev_skill_box = gr.Textbox(value=config_data[\"skills\"][\"regulatory_reviewer\"], label=\"Reviewer Skill (审校标准)\", lines=5)\n","            save_btn = gr.Button(\"保存 Skill 修改\")\n","            save_status = gr.Markdown()\n","\n","            save_btn.click(fn=save_config, inputs=[model_dropdown, trans_skill_box, rev_skill_box], outputs=save_status)\n","\n","        with gr.Column(scale=2):\n","            gr.Markdown(\"### 💬 翻译工作台\")\n","            chatbot = gr.Interface(\n","                fn=run_translation,\n","                inputs=[\n","                    gr.Textbox(lines=6, label=\"输入需要翻译的临床/法规文本（支持中英双向自动识别）\"),\n","                    api_key_input,\n","                    model_dropdown\n","                ],\n","                outputs=gr.Textbox(label=\"专业定稿译文\", lines=10),\n","                submit_btn=\"开始多轮反思翻译\"\n","            )\n","\n","demo.launch()"]}]}
+import os
+import json
+import re
+import streamlit as st
+import translation_agent as ta
+
+st.set_page_config(page_title="医药法规智能翻译 Agent", page_icon="💊", layout="wide")
+
+# 加载配置
+def load_config():
+    if os.path.exists("config.json"):
+        with open("config.json", "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {
+        "model_config": {"current_model": "gemini-3.5-flash-lite"},
+        "skills": {
+            "regulatory_translator": "You are an expert regulatory translator specializing in life sciences, pharmacological, and clinical documents.",
+            "regulatory_reviewer": "You are an elite English-Chinese regulatory reviewer."
+        }
+    }
+
+config = load_config()
+
+# 侧边栏配置
+st.sidebar.markdown("### ⚙️ 系统配置")
+api_key = st.sidebar.text_input("Gemini API Key", type="password", placeholder="输入您的 API Key...")
+model_choice = st.sidebar.selectbox(
+    "选择驱动模型",
+    ["gemini-3.5-flash-lite", "gemini-1.5-pro", "gemini-1.5-flash"],
+    index=0
+)
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🧠 医药 Skill 管理")
+trans_skill = st.sidebar.text_area("Translator Skill", value=config["skills"]["regulatory_translator"], height=150)
+rev_skill = st.sidebar.text_area("Reviewer Skill", value=config["skills"]["regulatory_reviewer"], height=150)
+
+# 主界面
+st.title("💊 医药法规智能翻译 Agent")
+st.markdown("支持英中双向自动识别。输入英文自动译为中文（CDE规范），输入中文自动译为英文（FDA/ICH规范）。")
+
+def auto_detect_language(text):
+    chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', text))
+    if chinese_chars > 2 or (len(text.strip()) > 0 and chinese_chars / len(text.strip()) > 0.05):
+        return "Chinese", "English", "United States"
+    else:
+        return "English", "Chinese", "China"
+
+# 初始化聊天历史
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# 展示历史对话
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+# 接收用户输入
+if prompt := st.chat_input("在此输入或粘贴需要翻译的临床/法规文本..."):
+    if not api_key:
+        st.error("❌ 请先在左侧边栏输入您的 Gemini API Key")
+    else:
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            with st.spinner("⏳ 正在执行【初译 -> 反思审校 -> 定稿】工作流..."):
+                try:
+                    os.environ["OPENAI_API_KEY"] = api_key
+                    os.environ["OPENAI_BASE_URL"] = "https://generativelanguage.googleapis.com/v1beta/openai/"
+                    
+                    # 动态修改底层模型
+                    utils_file = "/usr/local/lib/python3.10/site-packages/translation_agent/utils.py"
+                    if os.path.exists(utils_file):
+                        with open(utils_file, "r", encoding="utf-8") as f:
+                            content = f.read()
+                        content = re.sub(r'model="[^"]+"', f'model="{model_choice}"', content)
+                        with open(utils_file, "w", encoding="utf-8") as f:
+                            f.write(content)
+
+                    source_lang, target_lang, country = auto_detect_language(prompt)
+                    
+                    translation = ta.translate(
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                        source_text=prompt,
+                        country=country 
+                    )
+                    
+                    result_md = f"**【识别方向: {source_lang} ➡️ {target_lang} | 模型: {model_choice}】**\n\n{translation}"
+                    st.markdown(result_md)
+                    st.session_state.messages.append({"role": "assistant", "content": result_md})
+                except Exception as e:
+                    err_msg = f"❌ 翻译出错: {str(e)}"
+                    st.error(err_msg)
+                    st.session_state.messages.append({"role": "assistant", "content": err_msg})
