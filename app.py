@@ -47,7 +47,6 @@ if "messages" not in st.session_state:
 
 # ==================== API Key 连通测试与模型获取 ====================
 def fetch_gemini_models(api_key):
-    """向 Google API 测试连通性并拉取支持 generateContent 的模型列表"""
     url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
     try:
         response = requests.get(url, timeout=10)
@@ -55,7 +54,6 @@ def fetch_gemini_models(api_key):
             data = response.json()
             models = []
             for m in data.get("models", []):
-                # 过滤出支持文本生成的模型
                 if "generateContent" in m.get("supportedGenerationMethods", []):
                     model_id = m["name"].replace("models/", "")
                     models.append(model_id)
@@ -88,7 +86,6 @@ def show_settings_dialog():
                         st.error(f"❌ 连通失败: {result}")
                         
     with col2:
-        # 下拉选择模型
         current_idx = 0
         if st.session_state.selected_model in st.session_state.available_models:
             current_idx = st.session_state.available_models.index(st.session_state.selected_model)
@@ -110,7 +107,6 @@ def show_settings_dialog():
         st.session_state.trans_skill = t_skill
         st.session_state.rev_skill = r_skill
         
-        # 写入外部 config.json 持久化
         new_config = {
             "model_config": {"current_model": st.session_state.selected_model},
             "skills": {
@@ -122,16 +118,15 @@ def show_settings_dialog():
         st.success("配置已保存！")
         st.rerun()
 
-# ==================== 顶部极简导航栏 ====================
+# ==================== 顶部导航栏 ====================
 header_col1, header_col2 = st.columns([5, 1])
 with header_col1:
     st.title("💊 医药法规翻译 Agent")
 with header_col2:
-    st.write("") # 间距调整
+    st.write("")
     if st.button("⚙️ 设置", help="配置 API Key、模型与 Skill 规则"):
         show_settings_dialog()
 
-# 当前状态提示胶囊
 status_text = f"当前模型: `{st.session_state.selected_model}`"
 if st.session_state.api_key:
     status_text += " | 🟢 API 已就绪"
@@ -147,12 +142,10 @@ def auto_detect_language(text):
     else:
         return "English", "Chinese", "China"
 
-# 渲染历史聊天信息
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# 接收输入
 if prompt := st.chat_input("在此输入或粘贴需要翻译的临床/法规文本..."):
     if not st.session_state.api_key:
         st.error("❌ 尚未配置 API Key，请点击右上角【⚙️ 设置】填入并验证您的密钥。")
@@ -167,18 +160,43 @@ if prompt := st.chat_input("在此输入或粘贴需要翻译的临床/法规文
                     os.environ["OPENAI_API_KEY"] = st.session_state.api_key
                     os.environ["OPENAI_BASE_URL"] = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
-                    # 动态注入所选模型与自定义 Skill
+                    # 动态覆写 ta_utils 里的默认模型参数与 prompt 模板
                     import inspect
                     utils_file = inspect.getfile(ta_utils)
                     if os.path.exists(utils_file):
-                        with open(utils_file, "r", encoding="utf-8") as f:
-                            content = f.read()
-                        
-                        # 替换模型定义
-                        content = re.sub(r'model="[^"]+"', f'model="{st.session_state.selected_model}"', content)
-                        content = re.sub(r'model:\s*str\s*=\s*"[^"]+"', f'model: str = "{st.session_state.selected_model}"', content)
-                        
-                        # 注入 Skill 规则
-                        content = content.replace("You are an expert linguist, specializing in translation from {source_lang} to {target_lang}.", st.session_state.trans_skill)
-                        content = content.replace("You are an expert linguist specializing in translation from {source_lang} to {target_lang}.", st.session_state.trans_skill)
-                        content = content.replace("Your task is to carefully read a source text and a translation from {source_lang} to {target_lang}, and then give constructive criticism and helpful suggestions to improve the translation.", st.session_state.rev_skill)
+                        try:
+                            with open(utils_file, "r", encoding="utf-8") as f:
+                                content = f.read()
+                            
+                            content = re.sub(r'model="[^"]+"', f'model="{st.session_state.selected_model}"', content)
+                            content = re.sub(r'model:\s*str\s*=\s*"[^"]+"', f'model: str = "{st.session_state.selected_model}"', content)
+                            
+                            old_trans = "You are an expert linguist, specializing in translation from {source_lang} to {target_lang}."
+                            old_rev = "Your task is to carefully read a source text and a translation from {source_lang} to {target_lang}, and then give constructive criticism and helpful suggestions to improve the translation."
+                            
+                            if old_trans in content:
+                                content = content.replace(old_trans, st.session_state.trans_skill)
+                            if old_rev in content:
+                                content = content.replace(old_rev, st.session_state.rev_skill)
+                                
+                            with open(utils_file, "w", encoding="utf-8") as f:
+                                f.write(content)
+                        except Exception:
+                            pass
+
+                    source_lang, target_lang, country = auto_detect_language(prompt)
+                    
+                    translation = ta_utils.translate(
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                        source_text=prompt,
+                        country=country 
+                    )
+                    
+                    result_md = f"**【识别方向: {source_lang} ➡️ {target_lang} | 驱动模型: {st.session_state.selected_model}】**\n\n{translation}"
+                    st.markdown(result_md)
+                    st.session_state.messages.append({"role": "assistant", "content": result_md})
+                except Exception as e:
+                    err_msg = f"❌ 翻译出错: {str(e)}"
+                    st.error(err_msg)
+                    st.session_state.messages.append({"role": "assistant", "content": err_msg})
