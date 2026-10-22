@@ -181,4 +181,4 @@ if prompt := st.chat_input("在此输入或粘贴需要翻译的临床/法规文
                         # 注入 Skill 规则
                         content = content.replace("You are an expert linguist, specializing in translation from {source_lang} to {target_lang}.", st.session_state.trans_skill)
                         content = content.replace("You are an expert linguist specializing in translation from {source_lang} to {target_lang}.", st.session_state.trans_skill)
-                        content = content.replace("Your task is to carefully read a source text and a translation from {source_lang} to {target_lang}, and then give constructive criticism and helpful suggestions to improve the translation.",
+                        content = content.replace("Your task is to carefully read a source text and a translation from {source_lang} to {target_lang}, and then give constructive criticism and helpful suggestions to improve the translation.", st.session_state.rev_skill)
