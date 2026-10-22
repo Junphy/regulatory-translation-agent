@@ -1,5 +1,3 @@
-translation-agent
-openai
 streamlit
-PyYAML
+openai
 requests
