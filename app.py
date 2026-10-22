@@ -7,6 +7,34 @@ from openai import OpenAI
 
 st.set_page_config(page_title="医药法规智能翻译 Agent", page_icon="💊", layout="centered")
 
+# ==================== 界面样式优化（左右气泡对话） ====================
+st.markdown("""
+<style>
+/* 用户消息靠右对齐与气泡配色 */
+div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarUser"]) {
+    flex-direction: row-reverse;
+    text-align: right;
+}
+div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarUser"]) div[data-testid="stMarkdownContainer"] {
+    background-color: #e8f0fe;
+    color: #1a73e8;
+    padding: 12px 16px;
+    border-radius: 16px 4px 16px 16px;
+    display: inline-block;
+    text-align: left;
+}
+
+/* AI 助手消息靠左对齐与气泡配色 */
+div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarAssistant"]) div[data-testid="stMarkdownContainer"] {
+    background-color: #f1f3f4;
+    color: #202124;
+    padding: 12px 16px;
+    border-radius: 4px 16px 16px 16px;
+    display: inline-block;
+}
+</style>
+""", unsafe_allow_html=True)
+
 # ==================== 配置与状态管理 ====================
 def load_config():
     if os.path.exists("config.json"):
@@ -30,7 +58,7 @@ if "api_key" not in st.session_state:
     st.session_state.api_key = ""
 if "available_models" not in st.session_state:
     st.session_state.available_models = [
-        config["model_config"].get("current_model", "gemini-2.5-flash"),
+        "gemini-2.5-flash",
         "gemini-2.5-pro",
         "gemini-1.5-flash",
         "gemini-1.5-pro"
@@ -44,19 +72,38 @@ if "rev_skill" not in st.session_state:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# ==================== API Key 连通测试与模型获取 ====================
+# ==================== 模型精准过滤逻辑 ====================
 def fetch_gemini_models(api_key):
+    """拉取并严格筛选适合文本/翻译任务的 Gemini 核心模型"""
     url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
     try:
         response = requests.get(url, timeout=10)
         if response.status_code == 200:
             data = response.json()
             models = []
+            
+            # 排除向量、视觉生成、测试版等无用模型
+            excluded_keywords = ["embedding", "imagen", "aqa", "realtime", "tts"]
+
             for m in data.get("models", []):
-                if "generateContent" in m.get("supportedGenerationMethods", []):
-                    model_id = m["name"].replace("models/", "")
-                    models.append(model_id)
-            return True, models
+                name = m.get("name", "").replace("models/", "")
+                methods = m.get("supportedGenerationMethods", [])
+                
+                # 必须支持 generateContent
+                if "generateContent" not in methods:
+                    continue
+                
+                # 排除非文本模型
+                if any(kw in name.lower() for kw in excluded_keywords):
+                    continue
+
+                # 仅收纳 Gemini 主力模型（Flash / Pro 系列）
+                if "gemini" in name.lower():
+                    models.append(name)
+            
+            # 去重并排序
+            models = sorted(list(set(models)), reverse=True)
+            return True, models if models else ["gemini-2.5-flash", "gemini-1.5-pro"]
         else:
             err_msg = response.json().get("error", {}).get("message", "API Key 校验失败")
             return False, f"HTTP {response.status_code}: {err_msg}"
@@ -66,21 +113,21 @@ def fetch_gemini_models(api_key):
 # ==================== 设置弹窗 ====================
 @st.dialog("⚙️ 系统与模型配置", width="large")
 def show_settings_dialog():
-    st.markdown("#### 1. API 凭据与模型连通测试")
+    st.markdown("#### 1. API 凭据与文本模型探测")
     key_input = st.text_input("Gemini API Key", value=st.session_state.api_key, type="password", placeholder="AIzaSy...")
     
     col1, col2 = st.columns([1, 2])
     with col1:
-        if st.button("🧪 测试连接并获取模型"):
+        if st.button("🧪 测试连接并精选模型"):
             if not key_input.strip():
                 st.warning("请先输入 API Key")
             else:
-                with st.spinner("正在连通 Google AI Studio..."):
+                with st.spinner("正在筛选可用文本模型..."):
                     success, result = fetch_gemini_models(key_input.strip())
                     if success:
                         st.session_state.api_key = key_input.strip()
                         st.session_state.available_models = result
-                        st.success(f"✅ 验证成功！获取到 {len(result)} 个可用模型")
+                        st.success(f"✅ 筛选出 {len(result)} 个文本模型")
                     else:
                         st.error(f"❌ 连通失败: {result}")
                         
@@ -133,7 +180,7 @@ else:
     status_text += " | 🔴 未配置 API Key (点击右上角 ⚙️ 设置)"
 st.caption(status_text)
 
-# ==================== 原生 Agent 反思翻译引擎 ====================
+# ==================== 翻译工作流 ====================
 def auto_detect_language(text):
     chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', text))
     if chinese_chars > 2 or (len(text.strip()) > 0 and chinese_chars / len(text.strip()) > 0.05):
@@ -158,11 +205,11 @@ def run_agentic_translation(source_text, source_lang, target_lang, country, mode
         base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
     )
     
-    # 阶段 1：初译 (Initial Translation)
+    # 阶段 1：初译
     init_prompt = f"Translate the following {source_lang} text into {target_lang} for {country}:\n\n{source_text}"
     init_translation = call_llm(client, model, trans_skill, init_prompt)
     
-    # 阶段 2：反思审校 (Reflection Critique)
+    # 阶段 2：法规反思审校
     review_prompt = f"""Source Text ({source_lang}):
 {source_text}
 
@@ -172,7 +219,7 @@ Translation ({target_lang}):
 Critique this translation strictly against regulatory requirements, terminology consistency (ICH/FDA/CDE), and scientific accuracy."""
     critique = call_llm(client, model, rev_skill, review_prompt)
     
-    # 阶段 3：根据审校意见定稿 (Refinement)
+    # 阶段 3：改进定稿
     improve_prompt = f"""Source Text ({source_lang}):
 {source_text}
 
@@ -187,7 +234,7 @@ Provide the final, polished translation incorporating the critique above. Output
     
     return final_translation
 
-# ==================== 交互对话框 ====================
+# ==================== 消息渲染与接收 ====================
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
@@ -201,7 +248,7 @@ if prompt := st.chat_input("在此输入或粘贴需要翻译的临床/法规文
             st.markdown(prompt)
 
         with st.chat_message("assistant"):
-            with st.spinner(f"⏳ 正在使用【{st.session_state.selected_model}】执行三阶段反思翻译工作流..."):
+            with st.spinner(f"⏳ 正在使用【{st.session_state.selected_model}】执行初译与法规审校..."):
                 try:
                     source_lang, target_lang, country = auto_detect_language(prompt)
                     
@@ -216,7 +263,7 @@ if prompt := st.chat_input("在此输入或粘贴需要翻译的临床/法规文
                         rev_skill=st.session_state.rev_skill
                     )
                     
-                    result_md = f"**【识别方向: {source_lang} ➡️ {target_lang} | 驱动模型: {st.session_state.selected_model}】**\n\n{translation}"
+                    result_md = f"**【识别方向: {source_lang} ➡️ {target_lang} | 模型: {st.session_state.selected_model}】**\n\n{translation}"
                     st.markdown(result_md)
                     st.session_state.messages.append({"role": "assistant", "content": result_md})
                 except Exception as e:
