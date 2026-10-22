@@ -253,4 +253,4 @@ try:
                             trans_skill=active_t_skill, rev_skill=active_r_skill
                         )
                         
-                        result_md = f"**【识别方向: {source_lang} ➡️ {target_lang} | 模型: {st.session_state.selected_model}】**\n\
+                        result_md = f"**【识别方向: {source_lang} ➡️ {target_lang} | 模型: {st.session_state.selected_model}】**\n\n{translation}"
