@@ -7,6 +7,32 @@ from openai import OpenAI
 
 st.set_page_config(page_title="医药法规智能翻译 Agent", page_icon="💊", layout="centered")
 
+# ==================== 默认 Skill 提示词预设 ====================
+DEFAULT_TRANSLATOR = """You are a specialized translation engine for life sciences, clinical medicine, pharmacovigilance, and FDA/ICH/CDE regulatory documents. 
+
+Core Directives:
+1. Completeness & Accuracy: Translate every element precisely. Strict adherence to ICH/FDA/CDE terminology. Differentiate clinical (patients/subjects, fixed dose) vs non-clinical (animals, weight-standardized dose, sacrifice/necropsy) context.
+2. Non-Translated Elements: Keep abbreviations (e.g., SAE, AE), units of measurement, and math/chemistry symbols exactly as in the source. Ignore but precisely restore any tags or placeholders.
+3. Formatting Rules: 
+   - EN to ZH: Use full-width punctuation. No space between Chinese characters and numbers/English letters. Keep a half-width space between a number and an English unit (e.g., 5 mg). Convert dates to "yyyy年mm月dd日".
+   - ZH to EN: Use standard English punctuation and spacing. Convert dates to "dd-mmm-yyyy".
+
+Output ONLY the pure translated text. Do not expand, infer, add conversational filler, or output markdown wrappers unless explicitly requested."""
+
+DEFAULT_REVIEWER = """You are a top-tier life sciences technical literature and regulatory reviewer, expert in FDA, EMA, and CDE guidelines. Your task is to carefully read the source text and its initial translation, and provide constructive critique to improve the translation.
+
+Strict Constraints for Critique:
+1. Rule Compliance Check: Strictly evaluate if the initial translation followed all required formatting and translation rules:
+   - Completeness & Tags: No omissions. Tags/placeholders must be accurately restored to their original positions.
+   - Terminology Context: Correct distinction between clinical (patients, fixed dose) and non-clinical (animals, weight-standardized dose, sacrifice/necropsy).
+   - Non-Translated Elements: Abbreviations (e.g., SAE) and units must remain exactly as in the source.
+   - Formatting & Dates: Check date conversions (EN to ZH: "yyyy年mm月dd日"; ZH to EN: "dd-mmm-yyyy"), spacing (half-width space between number and English unit, e.g., "5 mg", but no space before Chinese units), and punctuation (full-width for ZH, standard for EN).
+2. Minimalist Approach: Maximize the retention of the initial translation's wording, provided it perfectly aligns with the grammar, meaning, and the rules above.
+3. Industry Standard Compliance: Point out and correct terms ONLY if there are scientific errors, logical contradictions, or non-compliance with official ICH/FDA/CDE terminology.
+4. Scientific Rigor: Ensure tense, voice, and preposition usage fully comply with academic and clinical norms. Maintain an objective and concise tone.
+
+Focus ONLY on deviations from regulatory guidelines, incorrect medical terminology, formatting rule violations, or lack of scientific precision. Do not output conversational filler."""
+
 # ==================== 界面样式优化 ====================
 st.markdown("""
 <style>
@@ -51,7 +77,6 @@ def load_config():
         try:
             with open("config.json", "r", encoding="utf-8") as f:
                 data = json.load(f)
-                # 兼容旧版本配置自动升级
                 if "envs" not in data.get("api_config", {}):
                     old_url = data.get("api_config", {}).get("base_url", "https://generativelanguage.googleapis.com/v1beta/openai/")
                     data["api_config"] = default_cfg["api_config"]
@@ -82,21 +107,21 @@ if "available_models" not in st.session_state:
 
 # === 初始化 Skill 状态 ===
 skills_cfg = config.get("skills", {})
-if "translator_profiles" not in skills_cfg:
-    st.session_state.translator_profiles = {"默认初译规则": skills_cfg.get("regulatory_translator", "You are an expert regulatory translator specializing in life sciences, pharmacological, and clinical documents. Your translations must strictly adhere to ICH, FDA, and CDE terminologies and formatting standards.")}
-    st.session_state.reviewer_profiles = {"默认审校规则": skills_cfg.get("regulatory_reviewer", "You are an elite English-Chinese regulatory reviewer. Focus ONLY on deviations from ICH/FDA/CDE guidelines, incorrect medical terminology, or lack of scientific precision.")}
-    st.session_state.active_t = "默认初译规则"
-    st.session_state.active_r = "默认审校规则"
+if "translator_profiles" not in skills_cfg or not skills_cfg.get("translator_profiles"):
+    st.session_state.translator_profiles = {"标准法规与临床翻译 (默认)": DEFAULT_TRANSLATOR}
+    st.session_state.reviewer_profiles = {"严格监管及规则核对审校 (默认)": DEFAULT_REVIEWER}
+    st.session_state.active_t = "标准法规与临床翻译 (默认)"
+    st.session_state.active_r = "严格监管及规则核对审校 (默认)"
 else:
-    st.session_state.translator_profiles = skills_cfg.get("translator_profiles", {})
-    st.session_state.reviewer_profiles = skills_cfg.get("reviewer_profiles", {})
-    st.session_state.active_t = skills_cfg.get("active_translator", "默认初译规则")
-    st.session_state.active_r = skills_cfg.get("active_reviewer", "默认审校规则")
+    st.session_state.translator_profiles = skills_cfg.get("translator_profiles", {"标准法规与临床翻译 (默认)": DEFAULT_TRANSLATOR})
+    st.session_state.reviewer_profiles = skills_cfg.get("reviewer_profiles", {"严格监管及规则核对审校 (默认)": DEFAULT_REVIEWER})
+    st.session_state.active_t = skills_cfg.get("active_translator", "标准法规与临床翻译 (默认)")
+    st.session_state.active_r = skills_cfg.get("active_reviewer", "严格监管及规则核对审校 (默认)")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# ==================== 通用 API 模型获取 (增强过滤) ====================
+# ==================== 通用 API 模型获取 ====================
 def fetch_openai_models(api_key, base_url):
     try:
         client = OpenAI(api_key=api_key, base_url=base_url)
@@ -136,7 +161,6 @@ def show_settings_dialog():
         st.markdown("<br>", unsafe_allow_html=True)
         new_env_name = st.text_input("➕ 另存为新接口 (选填)", placeholder="例如：公司内网代理", label_visibility="collapsed")
         
-    # 判断当前正在编辑的目标环境
     edit_target = new_env_name.strip() if new_env_name.strip() else sel_env
     is_default = (edit_target == "Gemini 原生接口 (默认)")
     
@@ -180,23 +204,21 @@ def show_settings_dialog():
         t_names = list(st.session_state.translator_profiles.keys())
         current_t_idx = t_names.index(st.session_state.active_t) if st.session_state.active_t in t_names else 0
         sel_t = st.selectbox("选择要生效的初译模板", options=t_names, index=current_t_idx, key="sel_t")
-        t_text = st.text_area("编辑模板内容 (直接修改下方内容即可)", value=st.session_state.translator_profiles[sel_t], height=120, key="txt_t")
+        t_text = st.text_area("编辑模板内容 (直接修改下方内容即可)", value=st.session_state.translator_profiles[sel_t], height=180, key="txt_t")
         new_t_name = st.text_input("💾 另存为新初译模板 (选填)", placeholder="例如：临床方案专用翻译", key="new_t")
 
     with tab_r:
         r_names = list(st.session_state.reviewer_profiles.keys())
         current_r_idx = r_names.index(st.session_state.active_r) if st.session_state.active_r in r_names else 0
         sel_r = st.selectbox("选择要生效的审校模板", options=r_names, index=current_r_idx, key="sel_r")
-        r_text = st.text_area("编辑模板内容 (直接修改下方内容即可) ", value=st.session_state.reviewer_profiles[sel_r], height=120, key="txt_r")
+        r_text = st.text_area("编辑模板内容 (直接修改下方内容即可) ", value=st.session_state.reviewer_profiles[sel_r], height=180, key="txt_r")
         new_r_name = st.text_input("💾 另存为新审校模板 (选填)", placeholder="例如：严格 FDA 规范审校", key="new_r")
 
     if st.button("✅ 保存全部配置并生效", type="primary"):
-        # 保存 API 配置
         st.session_state.api_envs[edit_target] = {"url": url_input.strip(), "key": key_input.strip()}
         st.session_state.active_env = edit_target
         st.session_state.selected_model = final_model
         
-        # 保存 Skill 配置
         if new_t_name.strip():
             st.session_state.translator_profiles[new_t_name.strip()] = t_text
             st.session_state.active_t = new_t_name.strip()
