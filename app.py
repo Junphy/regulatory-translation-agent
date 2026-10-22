@@ -3,7 +3,7 @@ import json
 import re
 import requests
 import streamlit as st
-import translation_agent.utils as ta_utils
+from openai import OpenAI
 
 st.set_page_config(page_title="医药法规智能翻译 Agent", page_icon="💊", layout="centered")
 
@@ -26,7 +26,6 @@ def save_config(config_data):
 
 config = load_config()
 
-# 初始化全局会话状态
 if "api_key" not in st.session_state:
     st.session_state.api_key = ""
 if "available_models" not in st.session_state:
@@ -64,7 +63,7 @@ def fetch_gemini_models(api_key):
     except Exception as e:
         return False, str(e)
 
-# ==================== 设置弹窗（Settings Modal） ====================
+# ==================== 设置弹窗 ====================
 @st.dialog("⚙️ 系统与模型配置", width="large")
 def show_settings_dialog():
     st.markdown("#### 1. API 凭据与模型连通测试")
@@ -134,7 +133,7 @@ else:
     status_text += " | 🔴 未配置 API Key (点击右上角 ⚙️ 设置)"
 st.caption(status_text)
 
-# ==================== 翻译核心逻辑 ====================
+# ==================== 原生 Agent 反思翻译引擎 ====================
 def auto_detect_language(text):
     chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', text))
     if chinese_chars > 2 or (len(text.strip()) > 0 and chinese_chars / len(text.strip()) > 0.05):
@@ -142,6 +141,53 @@ def auto_detect_language(text):
     else:
         return "English", "Chinese", "China"
 
+def call_llm(client, model, system_prompt, user_prompt):
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        temperature=0.3
+    )
+    return response.choices[0].message.content
+
+def run_agentic_translation(source_text, source_lang, target_lang, country, model, api_key, trans_skill, rev_skill):
+    client = OpenAI(
+        api_key=api_key,
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
+    )
+    
+    # 阶段 1：初译 (Initial Translation)
+    init_prompt = f"Translate the following {source_lang} text into {target_lang} for {country}:\n\n{source_text}"
+    init_translation = call_llm(client, model, trans_skill, init_prompt)
+    
+    # 阶段 2：反思审校 (Reflection Critique)
+    review_prompt = f"""Source Text ({source_lang}):
+{source_text}
+
+Translation ({target_lang}):
+{init_translation}
+
+Critique this translation strictly against regulatory requirements, terminology consistency (ICH/FDA/CDE), and scientific accuracy."""
+    critique = call_llm(client, model, rev_skill, review_prompt)
+    
+    # 阶段 3：根据审校意见定稿 (Refinement)
+    improve_prompt = f"""Source Text ({source_lang}):
+{source_text}
+
+Initial Translation:
+{init_translation}
+
+Reviewer Critique:
+{critique}
+
+Provide the final, polished translation incorporating the critique above. Output ONLY the final translation without conversational text."""
+    final_translation = call_llm(client, model, trans_skill, improve_prompt)
+    
+    return final_translation
+
+# ==================== 交互对话框 ====================
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
@@ -155,42 +201,19 @@ if prompt := st.chat_input("在此输入或粘贴需要翻译的临床/法规文
             st.markdown(prompt)
 
         with st.chat_message("assistant"):
-            with st.spinner(f"⏳ 正在使用【{st.session_state.selected_model}】执行初译与法规审校..."):
+            with st.spinner(f"⏳ 正在使用【{st.session_state.selected_model}】执行三阶段反思翻译工作流..."):
                 try:
-                    os.environ["OPENAI_API_KEY"] = st.session_state.api_key
-                    os.environ["OPENAI_BASE_URL"] = "https://generativelanguage.googleapis.com/v1beta/openai/"
-
-                    # 动态覆写 ta_utils 里的默认模型参数与 prompt 模板
-                    import inspect
-                    utils_file = inspect.getfile(ta_utils)
-                    if os.path.exists(utils_file):
-                        try:
-                            with open(utils_file, "r", encoding="utf-8") as f:
-                                content = f.read()
-                            
-                            content = re.sub(r'model="[^"]+"', f'model="{st.session_state.selected_model}"', content)
-                            content = re.sub(r'model:\s*str\s*=\s*"[^"]+"', f'model: str = "{st.session_state.selected_model}"', content)
-                            
-                            old_trans = "You are an expert linguist, specializing in translation from {source_lang} to {target_lang}."
-                            old_rev = "Your task is to carefully read a source text and a translation from {source_lang} to {target_lang}, and then give constructive criticism and helpful suggestions to improve the translation."
-                            
-                            if old_trans in content:
-                                content = content.replace(old_trans, st.session_state.trans_skill)
-                            if old_rev in content:
-                                content = content.replace(old_rev, st.session_state.rev_skill)
-                                
-                            with open(utils_file, "w", encoding="utf-8") as f:
-                                f.write(content)
-                        except Exception:
-                            pass
-
                     source_lang, target_lang, country = auto_detect_language(prompt)
                     
-                    translation = ta_utils.translate(
+                    translation = run_agentic_translation(
+                        source_text=prompt,
                         source_lang=source_lang,
                         target_lang=target_lang,
-                        source_text=prompt,
-                        country=country 
+                        country=country,
+                        model=st.session_state.selected_model,
+                        api_key=st.session_state.api_key,
+                        trans_skill=st.session_state.trans_skill,
+                        rev_skill=st.session_state.rev_skill
                     )
                     
                     result_md = f"**【识别方向: {source_lang} ➡️ {target_lang} | 驱动模型: {st.session_state.selected_model}】**\n\n{translation}"
