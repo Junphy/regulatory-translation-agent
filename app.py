@@ -316,3 +316,283 @@ def show_settings_dialog():
     tab_t, tab_r = st.tabs(["🗣️ Translator (初译规则)", "🕵️‍♂️ Reviewer (审校标准)"])
     
     with tab_t:
+        t_names = list(st.session_state.translator_profiles.keys())
+        current_t_idx = t_names.index(st.session_state.active_t) if st.session_state.active_t in t_names else 0
+        sel_t = st.selectbox("选择初译模板", options=t_names, index=current_t_idx, key="sel_t")
+        t_text = st.text_area("编辑初译模板内容", value=st.session_state.translator_profiles[sel_t], height=180, key="txt_t")
+        new_t_name = st.text_input("💾 另存为新初译模板 (选填)", key="new_t")
+
+    with tab_r:
+        r_names = list(st.session_state.reviewer_profiles.keys())
+        current_r_idx = r_names.index(st.session_state.active_r) if st.session_state.active_r in r_names else 0
+        sel_r = st.selectbox("选择审校模板", options=r_names, index=current_r_idx, key="sel_r")
+        r_text = st.text_area("编辑审校模板内容", value=st.session_state.reviewer_profiles[sel_r], height=180, key="txt_r")
+        new_r_name = st.text_input("💾 另存为新审校模板 (选填)", key="new_r")
+
+    if st.button("✅ 保存全部配置并生效", type="primary"):
+        st.session_state.api_envs[edit_target] = {"url": url_input.strip(), "key": key_input.strip()}
+        st.session_state.active_env = edit_target
+        record_model_usage(final_model)
+        
+        if new_t_name.strip():
+            st.session_state.translator_profiles[new_t_name.strip()] = t_text
+            st.session_state.active_t = new_t_name.strip()
+        else:
+            st.session_state.translator_profiles[sel_t] = t_text
+            st.session_state.active_t = sel_t
+            
+        if new_r_name.strip():
+            st.session_state.reviewer_profiles[new_r_name.strip()] = r_text
+            st.session_state.active_r = new_r_name.strip()
+        else:
+            st.session_state.reviewer_profiles[sel_r] = r_text
+            st.session_state.active_r = sel_r
+            
+        new_config = {
+            "api_config": {
+                "active_env": st.session_state.active_env,
+                "envs": st.session_state.api_envs,
+                "current_model": st.session_state.selected_model
+            },
+            "skills": {
+                "translator_profiles": st.session_state.translator_profiles,
+                "reviewer_profiles": st.session_state.reviewer_profiles,
+                "active_translator": st.session_state.active_t,
+                "active_reviewer": st.session_state.active_r
+            }
+        }
+        save_config(new_config)
+        st.success("配置已保存并生效！")
+        st.rerun()
+
+
+# ==================== 顶部导航栏 ====================
+header_col1, header_col2 = st.columns([5, 1])
+with header_col1:
+    st.title("💊 医药法规翻译 Agent")
+with header_col2:
+    st.write("")
+    if st.button("⚙️ 设置", help="管理 API 接口、模型与多模板 Skill"):
+        show_settings_dialog()
+
+# 状态提示
+curr_active_key = st.session_state.api_envs.get(st.session_state.active_env, {}).get("key", "")
+if curr_active_key:
+    status_text = f"🟢 **接口**: `{st.session_state.active_env}` | 🤖 **当前模型**: `{st.session_state.selected_model}`"
+else:
+    status_text = f"🔴 **未配置 API 凭据** (请点击右上角 ⚙️ 设置)"
+st.caption(status_text)
+st.caption(f"✍️ **当前规则** ➡️ 初译: `{st.session_state.active_t}` | 审校: `{st.session_state.active_r}`")
+
+
+# ==================== 核心翻译管线函数 ====================
+def auto_detect_language(text):
+    chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', text))
+    if chinese_chars > 2 or (len(text.strip()) > 0 and chinese_chars / len(text.strip()) > 0.05):
+        return "Chinese", "English", "United States"
+    else:
+        return "English", "Chinese", "China"
+
+def call_llm(client, model, system_prompt, user_prompt):
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        temperature=0.3
+    )
+    return response.choices[0].message.content
+
+def run_agentic_translation(source_text, model_name, api_key, base_url, trans_skill, rev_skill):
+    client = OpenAI(api_key=api_key, base_url=base_url)
+    source_lang, target_lang, country = auto_detect_language(source_text)
+    
+    # Step 1: 初译
+    init_prompt = f"Translate the following {source_lang} text into {target_lang} for {country}:\n\n{source_text}"
+    init_translation = call_llm(client, model_name, trans_skill, init_prompt)
+    
+    # Step 2: 审校
+    review_prompt = f"Source Text ({source_lang}):\n{source_text}\n\nTranslation ({target_lang}):\n{init_translation}\n\nCritique this translation strictly against regulatory requirements, terminology consistency (ICH/FDA/CDE), and scientific accuracy."
+    critique = call_llm(client, model_name, rev_skill, review_prompt)
+    
+    # Step 3: 终稿润色
+    improve_prompt = f"Source Text ({source_lang}):\n{source_text}\n\nInitial Translation:\n{init_translation}\n\nReviewer Critique:\n{critique}\n\nProvide the final, polished translation incorporating the critique above. Output ONLY the final translation without conversational text."
+    final_translation = call_llm(client, model_name, trans_skill, improve_prompt)
+    
+    step1_display = f"**【Step 1 忠实初译 ({source_lang} ➡️ {target_lang})】**\n\n{init_translation}"
+    step2_display = f"**【Step 2 审校与法规规则核对】**\n\n{critique}"
+    step3_display = f"{final_translation}"
+    
+    return step1_display, step2_display, step3_display
+
+
+# ==================== 侧置“品”字形主布局 (左 30% : 右 70%) ====================
+left_col, right_col = st.columns([3, 7], gap="medium")
+
+# 获取当前激活检视轮次的数据
+active_turn = None
+if st.session_state.messages:
+    idx = st.session_state.selected_turn_idx
+    if idx < 0 or idx >= len(st.session_state.messages):
+        idx = len(st.session_state.messages) - 1
+    active_turn = st.session_state.messages[idx]
+
+# ----------------- 左侧：上下两个独立视窗（Step 1 与 Step 2） -----------------
+with left_col:
+    with st.container(height=390, border=True):
+        h1_c1, h1_c2 = st.columns([8, 2])
+        with h1_c1:
+            st.markdown("**Step 1 · 初步翻译**")
+        with h1_c2:
+            if active_turn:
+                render_copy_icon_button(active_turn["step1"], key="copy_step1")
+        st.divider()
+        if active_turn:
+            st.markdown(active_turn["step1"])
+        else:
+            st.caption("暂无内容，发送文本后在此展示第一步初译结果。")
+
+    with st.container(height=390, border=True):
+        h2_c1, h2_c2 = st.columns([8, 2])
+        with h2_c1:
+            st.markdown("**Step 2 · 审校与最小修订**")
+        with h2_c2:
+            if active_turn:
+                render_copy_icon_button(active_turn["step2"], key="copy_step2")
+        st.divider()
+        if active_turn:
+            st.markdown(active_turn["step2"])
+        else:
+            st.caption("暂无内容，发送文本后在此展示第二步审校结果。")
+
+
+# ----------------- 右侧：主页面工作区（历史模型快捷栏 + 对话流 + Step 3） -----------------
+with right_col:
+    # 1. 顶部：基于使用历史的模型快捷切换栏 (MRU)
+    top_cols = st.columns([6.5, 3.5])
+    with top_cols[0]:
+        if st.session_state.model_history:
+            hist_cols = st.columns(min(len(st.session_state.model_history), 5))
+            for i, item in enumerate(st.session_state.model_history[:5]):
+                m_id = item["id"]
+                m_cnt = item["count"]
+                is_curr = (m_id == st.session_state.selected_model)
+                btn_label = f"{'🟢 ' if is_curr else ''}{m_id} ({m_cnt})"
+                if hist_cols[i].button(btn_label, key=f"hist_m_{i}", help="点击切换至此历史模型"):
+                    record_model_usage(m_id)
+                    st.rerun()
+    with top_cols[1]:
+        manual_quick_model = st.text_input(
+            "快捷切换模型",
+            value=st.session_state.selected_model,
+            label_visibility="collapsed",
+            placeholder="输入或切换模型名称..."
+        )
+        if manual_quick_model and manual_quick_model != st.session_state.selected_model:
+            record_model_usage(manual_quick_model)
+            st.rerun()
+
+    st.divider()
+
+    # 2. 中部：主对话流区域
+    chat_container = st.container(height=620, border=False)
+    with chat_container:
+        for i, msg in enumerate(st.session_state.messages):
+            # --- 用户消息 ---
+            with st.chat_message("user"):
+                if st.session_state.editing_idx == i:
+                    edited_val = st.text_area("编辑原文", value=msg["user"], key=f"edit_area_{i}", label_visibility="collapsed")
+                    ec1, ec2, _ = st.columns([1, 1, 10])
+                    with ec1:
+                        if st.button("✔️", key=f"save_edit_{i}", help="保存修改并重新翻译"):
+                            active_env_data = st.session_state.api_envs.get(st.session_state.active_env, {})
+                            s1, s2, s3 = run_agentic_translation(
+                                edited_val, st.session_state.selected_model,
+                                active_env_data.get("key", ""), active_env_data.get("url", ""),
+                                st.session_state.translator_profiles[st.session_state.active_t],
+                                st.session_state.reviewer_profiles[st.session_state.active_r]
+                            )
+                            st.session_state.messages[i] = {
+                                "user": edited_val, "step1": s1, "step2": s2, "step3": s3, "model": st.session_state.selected_model
+                            }
+                            st.session_state.messages = st.session_state.messages[:i + 1]
+                            st.session_state.selected_turn_idx = i
+                            st.session_state.editing_idx = None
+                            st.rerun()
+                    with ec2:
+                        if st.button("✖️", key=f"cancel_edit_{i}", help="取消编辑"):
+                            st.session_state.editing_idx = None
+                            st.rerun()
+                else:
+                    st.markdown(msg["user"])
+                    # 纯图标操作按钮：复制(📋) | 编辑(✏️) | Rewind回溯(⏪)
+                    u_b1, u_b2, u_b3, _ = st.columns([1, 1, 1, 11])
+                    with u_b1:
+                        render_copy_icon_button(msg["user"], key=f"copy_user_{i}")
+                    with u_b2:
+                        if st.button("✏️", key=f"edit_btn_{i}", help="编辑此条消息"):
+                            st.session_state.editing_idx = i
+                            st.rerun()
+                    with u_b3:
+                        if st.button("⏪", key=f"rewind_btn_{i}", help="Rewind：回溯到此轮并重译"):
+                            active_env_data = st.session_state.api_envs.get(st.session_state.active_env, {})
+                            s1, s2, s3 = run_agentic_translation(
+                                msg["user"], st.session_state.selected_model,
+                                active_env_data.get("key", ""), active_env_data.get("url", ""),
+                                st.session_state.translator_profiles[st.session_state.active_t],
+                                st.session_state.reviewer_profiles[st.session_state.active_r]
+                            )
+                            st.session_state.messages = st.session_state.messages[:i]
+                            st.session_state.messages.append({
+                                "user": msg["user"], "step1": s1, "step2": s2, "step3": s3, "model": st.session_state.selected_model
+                            })
+                            st.session_state.selected_turn_idx = len(st.session_state.messages) - 1
+                            st.rerun()
+
+            # --- Agent 回复终稿 (Step 3) ---
+            with st.chat_message("assistant"):
+                st.caption(f"Model: `{msg.get('model', st.session_state.selected_model)}` · Turn #{i + 1}")
+                st.markdown(msg["step3"])
+                # 纯图标操作按钮：复制(📋) | 左侧检视(👁️)
+                a_b1, a_b2, _ = st.columns([1, 1, 12])
+                with a_b1:
+                    render_copy_icon_button(msg["step3"], key=f"copy_agent_{i}")
+                with a_b2:
+                    if st.button("👁️", key=f"inspect_btn_{i}", help="在左侧窗口查看该轮的 Step 1 和 Step 2"):
+                        st.session_state.selected_turn_idx = i
+                        st.rerun()
+
+        # 底部滚动锚点
+        st.markdown('<div id="bottom-anchor"></div>', unsafe_allow_html=True)
+
+    # 3. 底部输入框
+    prompt = st.chat_input("输入需要翻译的临床/法规文本...")
+    if prompt:
+        active_env_data = st.session_state.api_envs.get(st.session_state.active_env, {})
+        exec_key = active_env_data.get("key", "")
+        exec_url = active_env_data.get("url", "")
+        
+        if not exec_key or not exec_url:
+            st.error("❌ 当前选中的接口尚未配置凭据，请点击右上角【⚙️ 设置】进行完善。")
+        else:
+            record_model_usage(st.session_state.selected_model)
+            with st.spinner(f"⏳ 正在通过【{st.session_state.active_env}】调用 {st.session_state.selected_model} 执行三阶段法规翻译..."):
+                try:
+                    s1, s2, s3 = run_agentic_translation(
+                        prompt, st.session_state.selected_model,
+                        exec_key, exec_url,
+                        st.session_state.translator_profiles[st.session_state.active_t],
+                        st.session_state.reviewer_profiles[st.session_state.active_r]
+                    )
+                    st.session_state.messages.append({
+                        "user": prompt,
+                        "step1": s1,
+                        "step2": s2,
+                        "step3": s3,
+                        "model": st.session_state.selected_model
+                    })
+                    st.session_state.selected_turn_idx = len(st.session_state.messages) - 1
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ 翻译出错: {str(e)}")
