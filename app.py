@@ -172,7 +172,6 @@ if "available_models" not in st.session_state:
 
 # === 初始化基于使用历史的模型列表 (MRU 策略) ===
 if "model_history" not in st.session_state:
-    # 默认将当前选中模型放入历史
     st.session_state.model_history = [{"id": st.session_state.selected_model, "count": 1}]
 
 # === 初始化 Skill 状态 ===
@@ -190,7 +189,6 @@ else:
 
 # === 对话与导航状态管理 ===
 if "messages" not in st.session_state:
-    # 结构: [{"user": "...", "step1": "...", "step2": "...", "step3": "...", "model": "..."}]
     st.session_state.messages = []
 
 if "selected_turn_idx" not in st.session_state:
@@ -318,14 +316,3 @@ def show_settings_dialog():
     tab_t, tab_r = st.tabs(["🗣️ Translator (初译规则)", "🕵️‍♂️ Reviewer (审校标准)"])
     
     with tab_t:
-        t_names = list(st.session_state.translator_profiles.keys())
-        current_t_idx = t_names.index(st.session_state.active_t) if st.session_state.active_t in t_names else 0
-        sel_t = st.selectbox("选择初译模板", options=t_names, index=current_t_idx, key="sel_t")
-        t_text = st.text_area("编辑模板内容", value=st.session_state.translator_profiles[sel_t], height=180, key="txt_t")
-        new_t_name = st.text_input("💾 另存为新初译模板 (选填)", key="new_t")
-
-    with tab_r:
-        r_names = list(st.session_state.reviewer_profiles.keys())
-        current_r_idx = r_names.index(st.session_state.active_r) if st.session_state.active_r in r_names else 0
-        sel_r = st.selectbox("选择审校模板", options=r_names, index=current_r_idx, key="sel_r")
-        r_text = st.text_area("编辑
