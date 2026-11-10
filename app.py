@@ -3,9 +3,16 @@ import json
 import re
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from openai import OpenAI
 
-st.set_page_config(page_title="医药法规智能翻译 Agent", page_icon="💊", layout="centered")
+# ==================== 1. 页面基础配置（开启宽屏适配侧置“品”字布局） ====================
+st.set_page_config(
+    page_title="医药法规智能翻译 Agent",
+    page_icon="💊",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
 
 # ==================== 默认 Skill 提示词预设 ====================
 DEFAULT_TRANSLATOR = """You are a specialized translation engine for life sciences, clinical medicine, pharmacovigilance, and FDA/ICH/CDE regulatory documents. 
@@ -33,30 +40,88 @@ Strict Constraints for Critique:
 
 Focus ONLY on deviations from regulatory guidelines, incorrect medical terminology, formatting rule violations, or lack of scientific precision. Do not output conversational filler."""
 
-# ==================== 界面样式优化 ====================
+# ==================== 界面样式与右下角直达底部按钮注入 ====================
 st.markdown("""
 <style>
-div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarUser"]) {
-    flex-direction: row-reverse;
-    text-align: right;
-}
-div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarUser"]) div[data-testid="stMarkdownContainer"] {
-    background-color: #e8f0fe;
-    color: #1a73e8;
-    padding: 12px 16px;
-    border-radius: 16px 4px 16px 16px;
-    display: inline-block;
-    text-align: left;
-}
-div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarAssistant"]) div[data-testid="stMarkdownContainer"] {
-    background-color: #f1f3f4;
-    color: #202124;
-    padding: 12px 16px;
-    border-radius: 4px 16px 16px 16px;
-    display: inline-block;
-}
+    /* 气泡聊天样式微调 */
+    div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarUser"]) {
+        flex-direction: row-reverse;
+        text-align: right;
+    }
+    div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarUser"]) div[data-testid="stMarkdownContainer"] {
+        background-color: #e8f0fe;
+        color: #1a73e8;
+        padding: 12px 16px;
+        border-radius: 16px 4px 16px 16px;
+        display: inline-block;
+        text-align: left;
+    }
+    div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarAssistant"]) div[data-testid="stMarkdownContainer"] {
+        background-color: #f1f3f4;
+        color: #202124;
+        padding: 12px 16px;
+        border-radius: 4px 16px 16px 16px;
+        display: inline-block;
+    }
+
+    /* 右下角悬浮一键直达底部按钮 + 滚动条 */
+    .floating-nav {
+        position: fixed;
+        bottom: 28px;
+        right: 28px;
+        z-index: 99999;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+        background: rgba(15, 23, 42, 0.85);
+        backdrop-filter: blur(8px);
+        padding: 10px 8px;
+        border-radius: 999px;
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+    }
+    .scroll-track {
+        width: 6px;
+        height: 48px;
+        background: rgba(255,255,255,0.15);
+        border-radius: 999px;
+        overflow: hidden;
+        position: relative;
+    }
+    .scroll-bar-fill {
+        width: 100%;
+        background: #38bdf8;
+        height: 100%;
+        border-radius: 999px;
+    }
+    .jump-bottom-btn {
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        background: #2563eb;
+        color: white !important;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-decoration: none !important;
+        font-size: 16px;
+        transition: all 0.2s;
+        cursor: pointer;
+    }
+    .jump-bottom-btn:hover {
+        background: #1d4ed8;
+        transform: translateY(2px);
+    }
 </style>
+
+<!-- 右下角悬浮直达底部组件 -->
+<div class="floating-nav" title="直达页面最底部">
+    <div class="scroll-track"><div class="scroll-bar-fill"></div></div>
+    <a href="#bottom-anchor" class="jump-bottom-btn" title="一键直达最底部">⏬</a>
+</div>
 """, unsafe_allow_html=True)
+
 
 # ==================== 配置与状态管理 ====================
 def load_config():
@@ -105,6 +170,11 @@ if "selected_model" not in st.session_state:
 if "available_models" not in st.session_state:
     st.session_state.available_models = [st.session_state.selected_model]
 
+# === 初始化基于使用历史的模型列表 (MRU 策略) ===
+if "model_history" not in st.session_state:
+    # 默认将当前选中模型放入历史
+    st.session_state.model_history = [{"id": st.session_state.selected_model, "count": 1}]
+
 # === 初始化 Skill 状态 ===
 skills_cfg = config.get("skills", {})
 if "translator_profiles" not in skills_cfg or not skills_cfg.get("translator_profiles"):
@@ -118,39 +188,88 @@ else:
     st.session_state.active_t = skills_cfg.get("active_translator", "标准法规与临床翻译 (默认)")
     st.session_state.active_r = skills_cfg.get("active_reviewer", "严格监管及规则核对审校 (默认)")
 
+# === 对话与导航状态管理 ===
 if "messages" not in st.session_state:
+    # 结构: [{"user": "...", "step1": "...", "step2": "...", "step3": "...", "model": "..."}]
     st.session_state.messages = []
 
-# ==================== 通用 API 模型获取 ====================
+if "selected_turn_idx" not in st.session_state:
+    st.session_state.selected_turn_idx = -1
+
+if "editing_idx" not in st.session_state:
+    st.session_state.editing_idx = None
+
+
+# ==================== 工具函数 ====================
+def record_model_usage(model_name: str):
+    """记录模型使用历史并置顶 (MRU 策略)"""
+    model_name = model_name.strip()
+    if not model_name:
+        return
+    existing_count = 0
+    new_list = []
+    for item in st.session_state.model_history:
+        if item["id"] == model_name:
+            existing_count = item["count"]
+        else:
+            new_list.append(item)
+    new_list.insert(0, {"id": model_name, "count": existing_count + 1})
+    st.session_state.model_history = new_list
+    st.session_state.selected_model = model_name
+
+
+def render_copy_icon_button(text_to_copy: str, key: str):
+    """渲染纯图标复制按钮"""
+    safe_text = json.dumps(text_to_copy)
+    components.html(
+        f"""
+        <button id="btn_{key}" title="复制到剪贴板" style="
+            background: transparent;
+            border: 1px solid rgba(148, 163, 184, 0.35);
+            border-radius: 8px;
+            padding: 4px 9px;
+            cursor: pointer;
+            font-size: 14px;
+            line-height: 1.2;
+            color: inherit;
+        " onclick='
+            navigator.clipboard.writeText({safe_text});
+            const b = document.getElementById("btn_{key}");
+            b.innerText = "✅";
+            setTimeout(() => {{ b.innerText = "📋"; }}, 1200);
+        '>📋</button>
+        """,
+        height=34,
+        width=46,
+    )
+
+
 def fetch_openai_models(api_key, base_url):
     try:
         client = OpenAI(api_key=api_key, base_url=base_url)
         models_page = client.models.list()
-        
         models = []
         excluded_keywords = [
             "embedding", "tts", "whisper", "dall-e", "image", "vision", "audio", 
             "aqa", "realtime", "moderation", "instruct", "babbage", "davinci", 
             "curie", "ada", "search", "similarity", "text-", "rerank", "question"
         ]
-        
         for m in models_page.data:
             name = m.id.lower()
             if any(kw in name for kw in excluded_keywords):
                 continue
             clean_id = m.id.replace("models/", "")
             models.append(clean_id)
-            
         models = sorted(list(set(models)), reverse=True)
         return True, models if models else ["未获取到文本模型，请手动输入"]
     except Exception as e:
         return False, str(e)
 
+
 # ==================== 设置弹窗 ====================
 @st.dialog("⚙️ 系统与模型配置", width="large")
 def show_settings_dialog():
     st.markdown("#### 1. API 接口与凭据管理")
-    
     env_names = list(st.session_state.api_envs.keys())
     current_env_idx = env_names.index(st.session_state.active_env) if st.session_state.active_env in env_names else 0
     
@@ -170,178 +289,43 @@ def show_settings_dialog():
         curr_url = st.session_state.api_envs.get(edit_target, {}).get("url", "")
     curr_key = st.session_state.api_envs.get(edit_target, {}).get("key", "")
     
-    url_input = st.text_input("接口地址 (Base URL)", value=curr_url, disabled=is_default, help="原生接口地址已锁定保护。若需自定义，请在右上方新建接口。")
-    key_input = st.text_input("API 凭据 / 密码", value=curr_key, type="password", placeholder="凭据将密文保存在配置文件中...")
+    url_input = st.text_input("接口地址 (Base URL)", value=curr_url, disabled=is_default)
+    key_input = st.text_input("API 凭据 / 密码", value=curr_key, type="password")
     
     col_btn1, col_btn2 = st.columns([1, 1])
     with col_btn1:
         if st.button("🧪 测试连接并获取模型列表"):
             if not key_input.strip() or not url_input.strip():
-                st.warning("请确保填写了完整的地址和凭据")
+                st.warning("请填写完整的地址和凭据")
             else:
                 with st.spinner("正在连通接口..."):
                     success, result = fetch_openai_models(key_input.strip(), url_input.strip())
                     if success:
                         st.session_state.available_models = result
-                        st.success(f"✅ 验证成功！获取到 {len(result)} 个可用模型。请在右侧选择并保存。")
+                        st.success(f"✅ 验证成功！获取到 {len(result)} 个可用模型。")
                     else:
-                        st.error(f"❌ 拉取失败: {result}。您仍可在右侧手动输入模型名称。")
-                        
+                        st.error(f"❌ 拉取失败: {result}")
     with col_btn2:
         current_idx = 0
         if st.session_state.selected_model in st.session_state.available_models:
             current_idx = st.session_state.available_models.index(st.session_state.selected_model)
         selected = st.selectbox("从拉取列表中选择模型", options=st.session_state.available_models, index=current_idx)
-        manual_model = st.text_input("或手动输入指定模型名称 (覆盖上方选择)", value="", placeholder="例如: deepseek-chat")
+        manual_model = st.text_input("或手动输入指定模型名称", value="", placeholder="例如: gpt-4o")
         final_model = manual_model.strip() if manual_model.strip() else selected
 
     st.markdown("---")
     st.markdown("#### 2. Skill 提示词模板管理")
-    
     tab_t, tab_r = st.tabs(["🗣️ Translator (初译规则)", "🕵️‍♂️ Reviewer (审校标准)"])
     
     with tab_t:
         t_names = list(st.session_state.translator_profiles.keys())
         current_t_idx = t_names.index(st.session_state.active_t) if st.session_state.active_t in t_names else 0
-        sel_t = st.selectbox("选择要生效的初译模板", options=t_names, index=current_t_idx, key="sel_t")
-        t_text = st.text_area("编辑模板内容 (直接修改下方内容即可)", value=st.session_state.translator_profiles[sel_t], height=180, key="txt_t")
-        new_t_name = st.text_input("💾 另存为新初译模板 (选填)", placeholder="例如：临床方案专用翻译", key="new_t")
+        sel_t = st.selectbox("选择初译模板", options=t_names, index=current_t_idx, key="sel_t")
+        t_text = st.text_area("编辑模板内容", value=st.session_state.translator_profiles[sel_t], height=180, key="txt_t")
+        new_t_name = st.text_input("💾 另存为新初译模板 (选填)", key="new_t")
 
     with tab_r:
         r_names = list(st.session_state.reviewer_profiles.keys())
         current_r_idx = r_names.index(st.session_state.active_r) if st.session_state.active_r in r_names else 0
-        sel_r = st.selectbox("选择要生效的审校模板", options=r_names, index=current_r_idx, key="sel_r")
-        r_text = st.text_area("编辑模板内容 (直接修改下方内容即可) ", value=st.session_state.reviewer_profiles[sel_r], height=180, key="txt_r")
-        new_r_name = st.text_input("💾 另存为新审校模板 (选填)", placeholder="例如：严格 FDA 规范审校", key="new_r")
-
-    if st.button("✅ 保存全部配置并生效", type="primary"):
-        st.session_state.api_envs[edit_target] = {"url": url_input.strip(), "key": key_input.strip()}
-        st.session_state.active_env = edit_target
-        st.session_state.selected_model = final_model
-        
-        if new_t_name.strip():
-            st.session_state.translator_profiles[new_t_name.strip()] = t_text
-            st.session_state.active_t = new_t_name.strip()
-        else:
-            st.session_state.translator_profiles[sel_t] = t_text
-            st.session_state.active_t = sel_t
-            
-        if new_r_name.strip():
-            st.session_state.reviewer_profiles[new_r_name.strip()] = r_text
-            st.session_state.active_r = new_r_name.strip()
-        else:
-            st.session_state.reviewer_profiles[sel_r] = r_text
-            st.session_state.active_r = sel_r
-        
-        new_config = {
-            "api_config": {
-                "active_env": st.session_state.active_env,
-                "envs": st.session_state.api_envs,
-                "current_model": st.session_state.selected_model
-            },
-            "skills": {
-                "translator_profiles": st.session_state.translator_profiles,
-                "reviewer_profiles": st.session_state.reviewer_profiles,
-                "active_translator": st.session_state.active_t,
-                "active_reviewer": st.session_state.active_r
-            }
-        }
-        save_config(new_config)
-        st.success("配置已保存并生效！")
-        st.rerun()
-
-# ==================== 顶部导航栏 ====================
-header_col1, header_col2 = st.columns([5, 1])
-with header_col1:
-    st.title("💊 医药法规翻译 Agent")
-with header_col2:
-    st.write("")
-    if st.button("⚙️ 设置", help="管理 API 接口、模型与多模板 Skill"):
-        show_settings_dialog()
-
-# ==================== 极简状态栏 ====================
-curr_active_key = st.session_state.api_envs.get(st.session_state.active_env, {}).get("key", "")
-if curr_active_key:
-    status_text = f"🟢 **接口**: `{st.session_state.active_env}` | 🤖 **模型**: `{st.session_state.selected_model}`"
-else:
-    status_text = f"🔴 **未配置 API 凭据** (请点击右上角 ⚙️ 设置)"
-st.caption(status_text)
-st.caption(f"✍️ **当前规则** ➡️ 初译: `{st.session_state.active_t}` | 审校: `{st.session_state.active_r}`")
-
-# ==================== 翻译工作流 ====================
-def auto_detect_language(text):
-    chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', text))
-    if chinese_chars > 2 or (len(text.strip()) > 0 and chinese_chars / len(text.strip()) > 0.05):
-        return "Chinese", "English", "United States"
-    else:
-        return "English", "Chinese", "China"
-
-def call_llm(client, model, system_prompt, user_prompt):
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        temperature=0.3
-    )
-    return response.choices[0].message.content
-
-def run_agentic_translation(source_text, source_lang, target_lang, country, model, api_key, base_url, trans_skill, rev_skill):
-    client = OpenAI(api_key=api_key, base_url=base_url)
-    
-    init_prompt = f"Translate the following {source_lang} text into {target_lang} for {country}:\n\n{source_text}"
-    init_translation = call_llm(client, model, trans_skill, init_prompt)
-    
-    review_prompt = f"Source Text ({source_lang}):\n{source_text}\n\nTranslation ({target_lang}):\n{init_translation}\n\nCritique this translation strictly against regulatory requirements, terminology consistency (ICH/FDA/CDE), and scientific accuracy."
-    critique = call_llm(client, model, rev_skill, review_prompt)
-    
-    improve_prompt = f"Source Text ({source_lang}):\n{source_text}\n\nInitial Translation:\n{init_translation}\n\nReviewer Critique:\n{critique}\n\nProvide the final, polished translation incorporating the critique above. Output ONLY the final translation without conversational text."
-    final_translation = call_llm(client, model, trans_skill, improve_prompt)
-    
-    return final_translation
-
-# ==================== 消息渲染与接收 ====================
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-
-if prompt := st.chat_input("在此输入需要翻译的临床/法规文本..."):
-    active_env_data = st.session_state.api_envs.get(st.session_state.active_env, {})
-    exec_key = active_env_data.get("key", "")
-    exec_url = active_env_data.get("url", "")
-    
-    if not exec_key or not exec_url:
-        st.error("❌ 当前选中的接口尚未配置凭据，请点击右上角【⚙️ 设置】进行完善。")
-    else:
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
-        with st.chat_message("assistant"):
-            with st.spinner(f"⏳ 正在通过【{st.session_state.active_env}】调用 {st.session_state.selected_model} 执行三阶段翻译..."):
-                try:
-                    source_lang, target_lang, country = auto_detect_language(prompt)
-                    
-                    active_t_skill = st.session_state.translator_profiles[st.session_state.active_t]
-                    active_r_skill = st.session_state.reviewer_profiles[st.session_state.active_r]
-                    
-                    translation = run_agentic_translation(
-                        source_text=prompt,
-                        source_lang=source_lang,
-                        target_lang=target_lang,
-                        country=country,
-                        model=st.session_state.selected_model,
-                        api_key=exec_key,
-                        base_url=exec_url,
-                        trans_skill=active_t_skill,
-                        rev_skill=active_r_skill
-                    )
-                    
-                    result_md = f"**【识别方向: {source_lang} ➡️ {target_lang} | 模型: {st.session_state.selected_model}】**\n\n{translation}"
-                    st.markdown(result_md)
-                    st.session_state.messages.append({"role": "assistant", "content": result_md})
-                except Exception as e:
-                    err_msg = f"❌ 翻译出错: {str(e)}"
-                    st.error(err_msg)
-                    st.session_state.messages.append({"role": "assistant", "content": err_msg})
+        sel_r = st.selectbox("选择审校模板", options=r_names, index=current_r_idx, key="sel_r")
+        r_text = st.text_area("编辑
