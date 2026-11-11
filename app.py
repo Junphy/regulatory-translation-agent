@@ -9,7 +9,7 @@ from prompts import DEFAULT_TRANSLATOR, DEFAULT_REVIEWER, DEFAULT_IMPROVER
 
 # ==================== 1. 页面基础配置 ====================
 st.set_page_config(
-    page_title="医药法规智能翻译 Agent",
+    page_title="Regulatory Translation Agent",
     page_icon="🧬",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -50,16 +50,16 @@ st.markdown("""
     .compact-header p { margin: 0 !important; font-size: 0.9rem; color: #5f6368; }
     .compact-header strong { color: #202124; font-size: 1.05rem; }
 
-    /* 5. 提升输入框位置，增加底部 Padding 使其与左侧面板下边框完全平齐 */
+    /* 5. 提升输入框位置，继续增加底部 Padding 使其与左侧面板下边框完全平齐，避开悬浮物 */
     div[data-testid="stChatInput"] {
         padding-top: 0 !important;
-        padding-bottom: 2.5rem !important; /* 关键修改：向上托起输入框 */
+        padding-bottom: 4rem !important; /* 关键修改：进一步向上托起输入框 */
     }
 
     /* 6. Gemini 风格输入框正上方居中悬浮向下箭头 (同步上移) */
     .gemini-scroll-down {
         position: fixed;
-        bottom: 98px; 
+        bottom: 120px; /* 关键修改：随输入框同步上移 */
         left: 50%;
         transform: translateX(-50%);
         width: 34px;
@@ -336,12 +336,13 @@ active_turn = st.session_state.messages[-1] if len(st.session_state.messages) > 
 
 # ----------------- 左侧：极简紧凑的 Step 1 与 Step 2 -----------------
 with left_col:
-    with st.container(height=320, border=True):
+    # 关键修改：增加高度，使其底边框向下延伸
+    with st.container(height=350, border=True):
         st.markdown(f'<div class="compact-header"><strong>Step 1 · 初步翻译</strong><br><p>🔵 规则：{st.session_state.active_t}</p></div>', unsafe_allow_html=True)
         if active_turn: st.markdown(active_turn["step1"])
         else: st.caption("暂无内容，发送文本后在此展示第一步初译。")
 
-    with st.container(height=320, border=True):
+    with st.container(height=350, border=True):
         st.markdown(f'<div class="compact-header"><strong>Step 2 · 审校与修订</strong><br><p>🔵 规则：{st.session_state.active_r}</p></div>', unsafe_allow_html=True)
         if active_turn: st.markdown(active_turn["step2"])
         else: st.caption("暂无内容，发送文本后在此展示第二步审校结果。")
@@ -349,8 +350,8 @@ with left_col:
 
 # ----------------- 右侧：主页面对话流 -----------------
 with right_col:
-    # 同步调减容器高度以适配拉高后的输入框
-    chat_container = st.container(height=620, border=False) 
+    # 同步调高容器高度以适配拉高后的输入框
+    chat_container = st.container(height=640, border=False) 
     with chat_container:
         for i, msg in enumerate(st.session_state.messages):
             # --- 用户消息 ---
