@@ -9,16 +9,16 @@ from prompts import DEFAULT_TRANSLATOR, DEFAULT_REVIEWER, DEFAULT_IMPROVER
 
 # ==================== 1. 页面基础配置 ====================
 st.set_page_config(
-    page_title="Regulatory Translation Agent",
+    page_title="3-Step Regulatory Translation Agent",
     page_icon="🧬",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-# ==================== 界面样式优化注入 (精准对齐底部) ====================
+# ==================== 界面样式优化注入 ====================
 st.markdown("""
 <style>
-    /* 1. 极致压缩两侧空白，扩展页面最大宽度 */
+    /* 1. 极致压缩两侧空白 */
     .block-container { 
         max-width: 96% !important; 
         padding-top: 1.5rem !important; 
@@ -40,26 +40,33 @@ st.markdown("""
         background-color: #f1f3f4; color: #202124; padding: 12px 16px; border-radius: 4px 16px 16px 16px; display: inline-block;
     }
 
-    /* 4. 左侧卡片紧凑布局 */
-    .st-emotion-cache-1wivap2 { padding: 1rem !important; } 
-    .compact-header {
+    /* 4. 左侧卡片紧凑布局与【Sticky 头部固定】 */
+    .st-emotion-cache-1wivap2 { padding: 0 !important; } /* 去除外层 padding，方便内部滚动 */
+    .step-card-content { padding: 1rem; overflow-y: auto; height: 100%; }
+    
+    /* 固定在顶部的标题栏 */
+    .sticky-header {
+        position: sticky;
+        top: 0;
+        background-color: white;
+        z-index: 10;
         border-bottom: 1px solid #e0e0e0;
         padding-bottom: 8px;
-        margin-bottom: 8px;
+        margin-bottom: 12px;
     }
-    .compact-header p { margin: 0 !important; font-size: 0.9rem; color: #5f6368; }
-    .compact-header strong { color: #202124; font-size: 1.05rem; }
+    .sticky-header p { margin: 0 !important; font-size: 0.9rem; color: #5f6368; }
+    .sticky-header strong { color: #202124; font-size: 1.05rem; }
 
-    /* 5. 提升输入框位置，继续增加底部 Padding 使其与左侧面板下边框完全平齐，避开悬浮物 */
+    /* 5. 提升输入框位置 */
     div[data-testid="stChatInput"] {
         padding-top: 0 !important;
-        padding-bottom: 4rem !important; /* 关键修改：进一步向上托起输入框 */
+        padding-bottom: 4rem !important; 
     }
 
-    /* 6. Gemini 风格输入框正上方居中悬浮向下箭头 (同步上移) */
+    /* 6. Gemini 悬浮向下箭头 */
     .gemini-scroll-down {
         position: fixed;
-        bottom: 120px; /* 关键修改：随输入框同步上移 */
+        bottom: 120px; 
         left: 50%;
         transform: translateX(-50%);
         width: 34px;
@@ -83,6 +90,10 @@ st.markdown("""
         color: #1a73e8 !important;
     }
     .gemini-scroll-down svg { width: 20px; height: 20px; fill: currentColor; }
+
+    /* 7. 【关键修复】：彻底隐藏用于交互的后端隐藏输入框实体，消除图1白底框 */
+    .hidden-trigger-container { display: none !important; visibility: hidden !important; height: 0 !important; margin: 0 !important; padding: 0 !important; }
+    .hidden-trigger-container input { display: none !important; }
 </style>
 
 <!-- 向下箭头 HTML -->
@@ -184,8 +195,12 @@ def render_action_icons(text_to_copy: str, msg_idx: int, is_user: bool = True):
     components.html(html_content, height=30, width=120 if is_user else 40)
     
     if is_user:
-        action_val = st.text_input("hidden_action", key=f"action_trigger_{msg_idx}", label_visibility="collapsed")
-        st.markdown(f'<div style="display:none;"><input type="text" id="action_trigger_{msg_idx}"></div>', unsafe_allow_html=True)
+        # 将隐藏框包裹在彻底隐藏的 Div 中，消除白底框
+        with st.container():
+            st.markdown(f'<div class="hidden-trigger-container">', unsafe_allow_html=True)
+            action_val = st.text_input("hidden_action", key=f"action_trigger_{msg_idx}", label_visibility="collapsed")
+            st.markdown('</div>', unsafe_allow_html=True)
+            
         if action_val == "edit":
             st.session_state.editing_idx = msg_idx
             st.session_state[f"action_trigger_{msg_idx}"] = ""
@@ -231,6 +246,7 @@ def run_agentic_translation(source_text, model_name, api_key, base_url, trans_sk
     improve_prompt = f"Source Text ({source_lang}):\n{source_text}\n\nInitial Translation:\n{init_translation}\n\nReviewer Critique:\n{critique}\n\nProvide the final, polished translation incorporating the critique above. Output ONLY the final translation without conversational text."
     final_translation = call_llm(client, model_name, imp_skill, improve_prompt)
     
+    # 纯净输出返回给前端展示
     return f"{init_translation}", f"{critique}", final_translation
 
 
@@ -334,23 +350,37 @@ with header_col3:
 left_col, right_col = st.columns([3, 7], gap="medium")
 active_turn = st.session_state.messages[-1] if len(st.session_state.messages) > 0 else None
 
-# ----------------- 左侧：极简紧凑的 Step 1 与 Step 2 -----------------
+# ----------------- 左侧：极简紧凑的 Step 1 与 Step 2 (带 Sticky 头部) -----------------
 with left_col:
-    # 关键修改：增加高度，使其底边框向下延伸
     with st.container(height=350, border=True):
-        st.markdown(f'<div class="compact-header"><strong>Step 1 · 初步翻译</strong><br><p>🔵 规则：{st.session_state.active_t}</p></div>', unsafe_allow_html=True)
-        if active_turn: st.markdown(active_turn["step1"])
-        else: st.caption("暂无内容，发送文本后在此展示第一步初译。")
+        st.markdown(f'''
+        <div class="step-card-content">
+            <div class="sticky-header">
+                <strong>Step 1 · 初步翻译</strong>
+                <p>🔵 规则：{st.session_state.active_t}</p>
+            </div>
+            <div class="step-body">
+                {"<br>".join(active_turn["step1"].split(chr(10))) if active_turn else "<span style='color:gray;font-size:14px;'>暂无内容，发送文本后在此展示第一步初译。</span>"}
+            </div>
+        </div>
+        ''', unsafe_allow_html=True)
 
     with st.container(height=350, border=True):
-        st.markdown(f'<div class="compact-header"><strong>Step 2 · 审校与修订</strong><br><p>🔵 规则：{st.session_state.active_r}</p></div>', unsafe_allow_html=True)
-        if active_turn: st.markdown(active_turn["step2"])
-        else: st.caption("暂无内容，发送文本后在此展示第二步审校结果。")
+        st.markdown(f'''
+        <div class="step-card-content">
+            <div class="sticky-header">
+                <strong>Step 2 · 严格审校与修订建议</strong>
+                <p>🔵 规则：{st.session_state.active_r}</p>
+            </div>
+            <div class="step-body">
+                {"<br>".join(active_turn["step2"].split(chr(10))) if active_turn else "<span style='color:gray;font-size:14px;'>暂无内容，发送文本后在此展示第二步审校结果。</span>"}
+            </div>
+        </div>
+        ''', unsafe_allow_html=True)
 
 
 # ----------------- 右侧：主页面对话流 -----------------
 with right_col:
-    # 同步调高容器高度以适配拉高后的输入框
     chat_container = st.container(height=640, border=False) 
     with chat_container:
         for i, msg in enumerate(st.session_state.messages):
