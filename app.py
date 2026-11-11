@@ -15,11 +15,17 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# ==================== 界面样式优化注入 (彻底重构) ====================
+# ==================== 界面样式优化注入 (极致空间利用) ====================
 st.markdown("""
 <style>
-    /* 1. 整体页面上移，减少顶部空白 */
-    .block-container { padding-top: 1.8rem !important; padding-bottom: 0 !important; }
+    /* 1. 极致压缩两侧空白，扩展页面最大宽度，整体上移 */
+    .block-container { 
+        max-width: 96% !important; /* 充分利用宽屏 */
+        padding-top: 1.5rem !important; 
+        padding-left: 1.5rem !important;
+        padding-right: 1.5rem !important;
+        padding-bottom: 0 !important; 
+    }
     
     /* 2. 全局隐藏浏览器原生滚动条，保持页面极简清爽 */
     ::-webkit-scrollbar { display: none !important; }
@@ -35,7 +41,7 @@ st.markdown("""
     }
 
     /* 4. 左侧卡片极简分割线与紧凑布局 */
-    .st-emotion-cache-1wivap2 { padding: 1rem !important; } /* 缩小卡片内边距 */
+    .st-emotion-cache-1wivap2 { padding: 1rem !important; } 
     .compact-header {
         border-bottom: 1px solid #e0e0e0;
         padding-bottom: 8px;
@@ -44,20 +50,21 @@ st.markdown("""
     .compact-header p { margin: 0 !important; font-size: 0.9rem; color: #5f6368; }
     .compact-header strong { color: #202124; font-size: 1.05rem; }
 
-    /* 5. 提升输入框位置，紧贴对话区并与左侧对齐 */
+    /* 5. 提升输入框位置，紧贴对话区 */
     div[data-testid="stChatInput"] {
         padding-top: 0 !important;
-        margin-top: -20px !important;
+        padding-bottom: 15px !important;
+        margin-top: -10px !important;
     }
 
     /* 6. Gemini 风格输入框正上方居中悬浮向下箭头 */
     .gemini-scroll-down {
         position: fixed;
-        bottom: 95px;
+        bottom: 82px; /* 紧贴上移后的输入框 */
         left: 50%;
         transform: translateX(-50%);
-        width: 36px;
-        height: 36px;
+        width: 34px;
+        height: 34px;
         background-color: #ffffff;
         border: 1px solid #e0e0e0;
         border-radius: 50%;
@@ -139,10 +146,6 @@ def record_model_usage(model_name: str):
 
 
 def render_action_icons(text_to_copy: str, msg_idx: int, is_user: bool = True):
-    """
-    通过底层 HTML+JS 彻底重写操作图标，彻底消除 Streamlit Button 自带的任何白边和背景框。
-    复制操作完全在前端完成；编辑/重译点击后通过 hidden input 将指令传回 Streamlit 后端。
-    """
     safe_text = json.dumps(text_to_copy)
     copy_svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>'
     edit_svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>'
@@ -176,7 +179,6 @@ def render_action_icons(text_to_copy: str, msg_idx: int, is_user: bool = True):
         <button id="btn_rewind" title="回溯重译" onclick='triggerAction("rewind")'>{rewind_svg}</button>
         <script>
             function triggerAction(action) {{
-                // 通过 window.parent 找到 Streamlit 的隐藏输入框触发状态变更
                 window.parent.document.getElementById("action_trigger_{msg_idx}").value = action;
                 window.parent.document.getElementById("action_trigger_{msg_idx}").dispatchEvent(new Event('change'));
             }}
@@ -185,7 +187,6 @@ def render_action_icons(text_to_copy: str, msg_idx: int, is_user: bool = True):
 
     components.html(html_content, height=30, width=120 if is_user else 40)
     
-    # 后端接收指令的隐藏输入槽
     if is_user:
         action_val = st.text_input("hidden_action", key=f"action_trigger_{msg_idx}", label_visibility="collapsed")
         st.markdown(f'<div style="display:none;"><input type="text" id="action_trigger_{msg_idx}"></div>', unsafe_allow_html=True)
@@ -340,12 +341,13 @@ active_turn = st.session_state.messages[-1] if len(st.session_state.messages) > 
 
 # ----------------- 左侧：极简紧凑的 Step 1 与 Step 2 -----------------
 with left_col:
-    with st.container(height=390, border=True):
+    # 缩减左侧卡片高度，给主页面留出空间
+    with st.container(height=320, border=True):
         st.markdown(f'<div class="compact-header"><strong>Step 1 · 初步翻译</strong><br><p>🔵 规则：{st.session_state.active_t}</p></div>', unsafe_allow_html=True)
         if active_turn: st.markdown(active_turn["step1"])
         else: st.caption("暂无内容，发送文本后在此展示第一步初译。")
 
-    with st.container(height=390, border=True):
+    with st.container(height=320, border=True):
         st.markdown(f'<div class="compact-header"><strong>Step 2 · 审校与修订</strong><br><p>🔵 规则：{st.session_state.active_r}</p></div>', unsafe_allow_html=True)
         if active_turn: st.markdown(active_turn["step2"])
         else: st.caption("暂无内容，发送文本后在此展示第二步审校结果。")
@@ -353,7 +355,8 @@ with left_col:
 
 # ----------------- 右侧：主页面对话流 -----------------
 with right_col:
-    chat_container = st.container(height=780, border=False)
+    # 降低右侧容器高度至 650，拉起底部的输入框
+    chat_container = st.container(height=650, border=False)
     with chat_container:
         for i, msg in enumerate(st.session_state.messages):
             # --- 用户消息 ---
@@ -386,7 +389,7 @@ with right_col:
 
         st.markdown('<div id="bottom-anchor"></div>', unsafe_allow_html=True)
 
-    # 底部输入框 (已通过上方 CSS 向上拉起间距)
+    # 底部输入框
     prompt = st.chat_input("输入需要翻译的临床/法规文本...")
     if prompt:
         active_env_data = st.session_state.api_envs.get(st.session_state.active_env, {})
