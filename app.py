@@ -17,13 +17,17 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# ==================== 界面样式优化注入 ====================
+# ==================== 界面样式优化注入 (彻底重构) ====================
 st.markdown("""
 <style>
     /* 1. 整体页面上移，减少顶部空白 */
-    .block-container { padding-top: 2.5rem !important; }
+    .block-container { padding-top: 2rem !important; }
     
-    /* 2. 气泡聊天样式微调 */
+    /* 2. 全局隐藏浏览器原生滚动条，保持页面极简清爽 */
+    ::-webkit-scrollbar { display: none !important; }
+    * { -ms-overflow-style: none !important; scrollbar-width: none !important; }
+    
+    /* 3. 气泡聊天样式微调 */
     div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarUser"]) { flex-direction: row-reverse; text-align: right; }
     div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarUser"]) div[data-testid="stMarkdownContainer"] {
         background-color: #e8f0fe; color: #1a73e8; padding: 12px 16px; border-radius: 16px 4px 16px 16px; display: inline-block; text-align: left;
@@ -32,19 +36,60 @@ st.markdown("""
         background-color: #f1f3f4; color: #202124; padding: 12px 16px; border-radius: 4px 16px 16px 16px; display: inline-block;
     }
 
-    /* 3. Gemini 风格纯图标按钮 (去除边框与背景) */
-    .icon-btn-box div.stButton > button {
-        background-color: transparent !important; border: none !important; box-shadow: none !important; padding: 0 4px !important; color: #5f6368 !important; font-size: 1.1rem; height: auto !important; min-height: 0 !important;
+    /* 4. 彻底重置对话框下方的 Streamlit Button 样式，实现极简透明纯图标 */
+    div[data-testid="stChatMessage"] div[data-testid="stButton"] > button {
+        background-color: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        color: #5f6368 !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        min-height: 0 !important;
+        height: 32px !important;
+        width: 32px !important;
+        border-radius: 50% !important;
+        line-height: 1 !important;
+        font-size: 1.1rem !important;
+        transition: background-color 0.2s, color 0.2s !important;
     }
-    .icon-btn-box div.stButton > button:hover { color: #1a73e8 !important; }
+    div[data-testid="stChatMessage"] div[data-testid="stButton"] > button:hover {
+        background-color: #f1f3f4 !important;
+        color: #1a73e8 !important;
+    }
 
-    /* 4. 右下角悬浮滚动条 */
-    .floating-nav { position: fixed; bottom: 28px; right: 28px; z-index: 99999; display: flex; flex-direction: column; align-items: center; gap: 8px; background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(8px); padding: 10px 8px; border-radius: 999px; }
-    .scroll-track { width: 6px; height: 48px; background: rgba(255,255,255,0.15); border-radius: 999px; }
-    .scroll-bar-fill { width: 100%; background: #38bdf8; height: 100%; border-radius: 999px; }
-    .jump-bottom-btn { width: 36px; height: 36px; border-radius: 50%; background: #2563eb; color: white !important; display: flex; align-items: center; justify-content: center; text-decoration: none !important; font-size: 16px; }
+    /* 5. Gemini 风格输入框正上方居中悬浮向下箭头 */
+    .gemini-scroll-down {
+        position: fixed;
+        bottom: 95px; /* 精确悬浮在底部 Chat Input 正上方 */
+        left: 50%;
+        transform: translateX(-50%);
+        width: 36px;
+        height: 36px;
+        background-color: #ffffff;
+        border: 1px solid #e0e0e0;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+        z-index: 99999;
+        text-decoration: none !important;
+        color: #5f6368 !important;
+        transition: all 0.2s;
+    }
+    .gemini-scroll-down:hover {
+        background-color: #f8f9fa;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.15);
+        color: #1a73e8 !important;
+    }
+    .gemini-scroll-down svg { width: 20px; height: 20px; fill: currentColor; }
 </style>
-<div class="floating-nav" title="直达页面最底部"><div class="scroll-track"><div class="scroll-bar-fill"></div></div><a href="#bottom-anchor" class="jump-bottom-btn" title="一键直达最底部">⏬</a></div>
+
+<!-- 向下箭头 HTML -->
+<a href="#bottom-anchor" class="gemini-scroll-down" title="滚动到底部">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M16.59 8.59L12 13.17 7.41 8.59 6 10l6 6 6-6z"/></svg>
+</a>
 """, unsafe_allow_html=True)
 
 
@@ -80,7 +125,6 @@ if "selected_model" not in st.session_state: st.session_state.selected_model = a
 if "available_models" not in st.session_state: st.session_state.available_models = [st.session_state.selected_model]
 if "model_history" not in st.session_state: st.session_state.model_history = [{"id": st.session_state.selected_model, "count": 1}]
 
-# 增加到 3 个 Prompt 状态
 skills_cfg = config.get("skills", {})
 st.session_state.translator_profiles = skills_cfg.get("translator_profiles", {"标准初译 (默认)": DEFAULT_TRANSLATOR})
 st.session_state.reviewer_profiles = skills_cfg.get("reviewer_profiles", {"严格审校 (默认)": DEFAULT_REVIEWER})
@@ -105,22 +149,29 @@ def record_model_usage(model_name: str):
     st.session_state.selected_model = model_name
 
 def render_copy_icon_button(text_to_copy: str, key: str):
+    """完美对齐的无缝 iframe 复制按钮"""
     safe_text = json.dumps(text_to_copy)
     svg_icon = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>'
     components.html(
         f"""
-        <button id="btn_{key}" title="复制文本" style="
-            background: transparent; border: none; cursor: pointer; color: #5f6368; 
-            padding: 4px; border-radius: 4px; display: inline-flex; align-items: center; justify-content: center;
-        " onclick='
+        <style>
+            body {{ margin: 0; padding: 0; background: transparent; overflow: hidden; display: flex; align-items: center; justify-content: center; }}
+            button {{
+                background: transparent; border: none; cursor: pointer; color: #5f6368; 
+                width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+                transition: background-color 0.2s, color 0.2s;
+            }}
+            button:hover {{ background-color: #f1f3f4; color: #1a73e8; }}
+            svg {{ width: 18px; height: 18px; fill: currentColor; }}
+        </style>
+        <button id="btn_{key}" title="复制文本" onclick='
             navigator.clipboard.writeText({safe_text});
             const b = document.getElementById("btn_{key}");
             b.innerHTML = "<span style=\\"font-size:14px;color:#1a73e8;\\">✓</span>";
             setTimeout(() => {{ b.innerHTML = `{svg_icon}`; }}, 1500);
         '>{svg_icon}</button>
-        <style> button:hover {{ background-color: #f1f3f4; color: #202124 !important; }} svg {{ width: 18px; height: 18px; fill: currentColor; }} </style>
         """,
-        height=30, width=32,
+        height=32, width=32,
     )
 
 def fetch_openai_models(api_key, base_url):
@@ -149,15 +200,12 @@ def run_agentic_translation(source_text, model_name, api_key, base_url, trans_sk
     client = OpenAI(api_key=api_key, base_url=base_url)
     source_lang, target_lang, country = auto_detect_language(source_text)
     
-    # Step 1: Initial Translation
     init_prompt = f"Translate the following {source_lang} text into {target_lang} for {country}:\n\n{source_text}"
     init_translation = call_llm(client, model_name, trans_skill, init_prompt)
     
-    # Step 2: Review / Critique
     review_prompt = f"Source Text ({source_lang}):\n{source_text}\n\nInitial Translation ({target_lang}):\n{init_translation}\n\nCritique this translation strictly against regulatory requirements, terminology consistency, and accuracy."
     critique = call_llm(client, model_name, rev_skill, review_prompt)
     
-    # Step 3: Improve / Polish
     improve_prompt = f"Source Text ({source_lang}):\n{source_text}\n\nInitial Translation:\n{init_translation}\n\nReviewer Critique:\n{critique}\n\nProvide the final, polished translation incorporating the critique above. Output ONLY the final translation without conversational text."
     final_translation = call_llm(client, model_name, imp_skill, improve_prompt)
     
@@ -210,7 +258,6 @@ def show_settings_dialog():
     st.markdown("---")
     st.markdown("#### 2. Agent 3-Step Prompts 管理 (吴恩达 Translation-Agent 标准)")
     
-    # 将原先的 2 个 Prompt 改为对应的 3 步结构
     tab_t, tab_r, tab_i = st.tabs(["🗣️ Step 1: 初译", "🕵️‍♂️ Step 2: 审校", "✨ Step 3: 定稿"])
     
     with tab_t:
@@ -236,13 +283,10 @@ def show_settings_dialog():
         st.session_state.active_env = edit_target
         record_model_usage(final_model)
         
-        # 保存初译
         st.session_state.active_t = new_t_name.strip() if new_t_name.strip() else sel_t
         st.session_state.translator_profiles[st.session_state.active_t] = t_text
-        # 保存审校
         st.session_state.active_r = new_r_name.strip() if new_r_name.strip() else sel_r
         st.session_state.reviewer_profiles[st.session_state.active_r] = r_text
-        # 保存定稿
         st.session_state.active_i = new_i_name.strip() if new_i_name.strip() else sel_i
         st.session_state.improver_profiles[st.session_state.active_i] = i_text
             
@@ -281,9 +325,8 @@ with header_col3:
         show_settings_dialog()
 
 
-# ==================== 侧置“品”字形主布局 (左 30% : 右 70%) ====================
+# ==================== 侧置“品”字形主布局 ====================
 left_col, right_col = st.columns([3, 7], gap="medium")
-
 active_turn = st.session_state.messages[-1] if len(st.session_state.messages) > 0 else None
 
 # ----------------- 左侧：Step 1 与 Step 2 -----------------
@@ -327,22 +370,19 @@ with right_col:
                             st.rerun()
                 else:
                     st.markdown(msg["user"])
-                    u_b1, u_b2, u_b3, _ = st.columns([0.6, 0.6, 0.6, 10])
+                    # 精确控制纯图标按钮的布局宽度，防止 iframe 被挤压
+                    u_b1, u_b2, u_b3, _ = st.columns([1, 1, 1, 15])
                     with u_b1: render_copy_icon_button(msg["user"], key=f"copy_user_{i}")
                     with u_b2:
-                        st.markdown('<div class="icon-btn-box">', unsafe_allow_html=True)
                         if st.button("✎", key=f"edit_btn_{i}", help="重新编辑此消息"): 
                             st.session_state.editing_idx = i; st.rerun()
-                        st.markdown('</div>', unsafe_allow_html=True)
                     with u_b3:
-                        st.markdown('<div class="icon-btn-box">', unsafe_allow_html=True)
                         if st.button("↺", key=f"rewind_btn_{i}", help="回溯并重译当前文本"):
                             active_env_data = st.session_state.api_envs.get(st.session_state.active_env, {})
                             s1, s2, s3 = run_agentic_translation(msg["user"], st.session_state.selected_model, active_env_data.get("key", ""), active_env_data.get("url", ""), st.session_state.translator_profiles[st.session_state.active_t], st.session_state.reviewer_profiles[st.session_state.active_r], st.session_state.improver_profiles[st.session_state.active_i])
                             st.session_state.messages = st.session_state.messages[:i]
                             st.session_state.messages.append({"user": msg["user"], "step1": s1, "step2": s2, "step3": s3, "model": st.session_state.selected_model})
                             st.rerun()
-                        st.markdown('</div>', unsafe_allow_html=True)
 
             # --- Agent 回复终稿 ---
             with st.chat_message("assistant"):
