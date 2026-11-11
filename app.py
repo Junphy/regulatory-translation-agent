@@ -41,10 +41,9 @@ st.markdown("""
     }
 
     /* 4. 左侧卡片紧凑布局与【Sticky 头部固定】 */
-    .st-emotion-cache-1wivap2 { padding: 0 !important; } /* 去除外层 padding，方便内部滚动 */
+    .st-emotion-cache-1wivap2 { padding: 0 !important; } 
     .step-card-content { padding: 1rem; overflow-y: auto; height: 100%; }
     
-    /* 固定在顶部的标题栏 */
     .sticky-header {
         position: sticky;
         top: 0;
@@ -57,7 +56,7 @@ st.markdown("""
     .sticky-header p { margin: 0 !important; font-size: 0.9rem; color: #5f6368; }
     .sticky-header strong { color: #202124; font-size: 1.05rem; }
 
-    /* 5. 提升输入框位置 */
+    /* 5. 提升输入框位置，留出空间并避开底部遮挡 */
     div[data-testid="stChatInput"] {
         padding-top: 0 !important;
         padding-bottom: 4rem !important; 
@@ -91,9 +90,8 @@ st.markdown("""
     }
     .gemini-scroll-down svg { width: 20px; height: 20px; fill: currentColor; }
 
-    /* 7. 【关键修复】：彻底隐藏用于交互的后端隐藏输入框实体，消除图1白底框 */
-    .hidden-trigger-container { display: none !important; visibility: hidden !important; height: 0 !important; margin: 0 !important; padding: 0 !important; }
-    .hidden-trigger-container input { display: none !important; }
+    /* 隐藏顶部 Query 参数刷新带来的闪烁占位符 */
+    [data-testid="stAppViewBlockContainer"] > div:first-child { display: none !important; }
 </style>
 
 <!-- 向下箭头 HTML -->
@@ -156,6 +154,10 @@ def record_model_usage(model_name: str):
 
 
 def render_action_icons(text_to_copy: str, msg_idx: int, is_user: bool = True):
+    """
+    通过无感刷新 URL 参数 (Query Params) 来与后端通信，
+    物理上彻底消灭了图 2 中那个顽固的幽灵输入框。
+    """
     safe_text = json.dumps(text_to_copy)
     copy_svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>'
     edit_svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>'
@@ -182,36 +184,21 @@ def render_action_icons(text_to_copy: str, msg_idx: int, is_user: bool = True):
     
     if is_user:
         html_content += f"""
-        <button id="btn_edit" title="编辑原文" onclick='triggerAction("edit")'>{edit_svg}</button>
-        <button id="btn_rewind" title="回溯重译" onclick='triggerAction("rewind")'>{rewind_svg}</button>
+        <button id="btn_edit" title="编辑原文" onclick='triggerQueryAction("edit", {msg_idx})'>{edit_svg}</button>
+        <button id="btn_rewind" title="回溯重译" onclick='triggerQueryAction("rewind", {msg_idx})'>{rewind_svg}</button>
         <script>
-            function triggerAction(action) {{
-                window.parent.document.getElementById("action_trigger_{msg_idx}").value = action;
-                window.parent.document.getElementById("action_trigger_{msg_idx}").dispatchEvent(new Event('change'));
+            function triggerQueryAction(action, idx) {{
+                const url = new URL(window.parent.location);
+                url.searchParams.set('action', action);
+                url.searchParams.set('msg_idx', idx);
+                window.parent.history.pushState({{}}, '', url);
+                // 触发一个虚假的 resize 事件强制 Streamlit 感知 URL 变化
+                window.parent.dispatchEvent(new Event('popstate'));
             }}
         </script>
         """
 
     components.html(html_content, height=30, width=120 if is_user else 40)
-    
-    if is_user:
-        # 将隐藏框包裹在彻底隐藏的 Div 中，消除白底框
-        with st.container():
-            st.markdown(f'<div class="hidden-trigger-container">', unsafe_allow_html=True)
-            action_val = st.text_input("hidden_action", key=f"action_trigger_{msg_idx}", label_visibility="collapsed")
-            st.markdown('</div>', unsafe_allow_html=True)
-            
-        if action_val == "edit":
-            st.session_state.editing_idx = msg_idx
-            st.session_state[f"action_trigger_{msg_idx}"] = ""
-            st.rerun()
-        elif action_val == "rewind":
-            st.session_state[f"action_trigger_{msg_idx}"] = ""
-            active_env_data = st.session_state.api_envs.get(st.session_state.active_env, {})
-            s1, s2, s3 = run_agentic_translation(st.session_state.messages[msg_idx]["user"], st.session_state.selected_model, active_env_data.get("key", ""), active_env_data.get("url", ""), st.session_state.translator_profiles[st.session_state.active_t], st.session_state.reviewer_profiles[st.session_state.active_r], st.session_state.improver_profiles[st.session_state.active_i])
-            st.session_state.messages = st.session_state.messages[:msg_idx]
-            st.session_state.messages.append({"user": text_to_copy, "step1": s1, "step2": s2, "step3": s3, "model": st.session_state.selected_model})
-            st.rerun()
 
 
 def fetch_openai_models(api_key, base_url):
@@ -246,8 +233,24 @@ def run_agentic_translation(source_text, model_name, api_key, base_url, trans_sk
     improve_prompt = f"Source Text ({source_lang}):\n{source_text}\n\nInitial Translation:\n{init_translation}\n\nReviewer Critique:\n{critique}\n\nProvide the final, polished translation incorporating the critique above. Output ONLY the final translation without conversational text."
     final_translation = call_llm(client, model_name, imp_skill, improve_prompt)
     
-    # 纯净输出返回给前端展示
     return f"{init_translation}", f"{critique}", final_translation
+
+
+# ==================== 后端处理 URL 传来的操作指令 ====================
+if "action" in st.query_params and "msg_idx" in st.query_params:
+    action_type = st.query_params["action"]
+    msg_idx = int(st.query_params["msg_idx"])
+    
+    # 清空参数防止重复执行
+    st.query_params.clear()
+    
+    if action_type == "edit":
+        st.session_state.editing_idx = msg_idx
+        st.rerun()
+    elif action_type == "rewind":
+        # 如果是 rewind，将状态暂存，稍后在 chat_container 内部触发以保证 spinner 位置正确
+        st.session_state.pending_rewind_idx = msg_idx
+        st.rerun()
 
 
 # ==================== 设置弹窗 ====================
@@ -326,7 +329,8 @@ def show_settings_dialog():
 # ==================== 页面头部 ====================
 header_col1, header_col2, header_col3 = st.columns([6, 3, 1])
 with header_col1:
-    st.title("🧬 医药法规翻译 Agent")
+    # 按照要求修改名称
+    st.title("🧬 3-Step Regulatory Translation Agent")
     curr_active_key = st.session_state.api_envs.get(st.session_state.active_env, {}).get("key", "")
     st.caption(f"{'🟢' if curr_active_key else '🔴'} 接口: `{st.session_state.active_env}`")
 
@@ -392,11 +396,13 @@ with right_col:
                     with ec1:
                         if st.button("✔️ 保存修改", key=f"save_edit_{i}"):
                             active_env_data = st.session_state.api_envs.get(st.session_state.active_env, {})
-                            s1, s2, s3 = run_agentic_translation(edited_val, st.session_state.selected_model, active_env_data.get("key", ""), active_env_data.get("url", ""), st.session_state.translator_profiles[st.session_state.active_t], st.session_state.reviewer_profiles[st.session_state.active_r], st.session_state.improver_profiles[st.session_state.active_i])
-                            st.session_state.messages = st.session_state.messages[:i]
-                            st.session_state.messages.append({"user": edited_val, "step1": s1, "step2": s2, "step3": s3, "model": st.session_state.selected_model})
-                            st.session_state.editing_idx = None
-                            st.rerun()
+                            # 编辑后调用在内部容器中执行，确保 spinner 在框内
+                            with st.spinner(f"⏳ 正在调用 {st.session_state.selected_model} 执行 3-Step 法规翻译..."):
+                                s1, s2, s3 = run_agentic_translation(edited_val, st.session_state.selected_model, active_env_data.get("key", ""), active_env_data.get("url", ""), st.session_state.translator_profiles[st.session_state.active_t], st.session_state.reviewer_profiles[st.session_state.active_r], st.session_state.improver_profiles[st.session_state.active_i])
+                                st.session_state.messages = st.session_state.messages[:i]
+                                st.session_state.messages.append({"user": edited_val, "step1": s1, "step2": s2, "step3": s3, "model": st.session_state.selected_model})
+                                st.session_state.editing_idx = None
+                                st.rerun()
                     with ec2:
                         if st.button("✖️ 取消", key=f"cancel_edit_{i}"):
                             st.session_state.editing_idx = None
@@ -411,18 +417,48 @@ with right_col:
                 st.markdown(msg["step3"])
                 render_action_icons(msg["step3"], i, is_user=False)
 
+        # 挂起的 Rewind 回溯操作在此容器内部执行 (解决图 1 的遮挡问题)
+        if "pending_rewind_idx" in st.session_state:
+            rewind_idx = st.session_state.pending_rewind_idx
+            del st.session_state["pending_rewind_idx"]
+            active_env_data = st.session_state.api_envs.get(st.session_state.active_env, {})
+            with st.spinner(f"⏳ 正在调用 {st.session_state.selected_model} 执行 3-Step 法规翻译..."):
+                target_text = st.session_state.messages[rewind_idx]["user"]
+                s1, s2, s3 = run_agentic_translation(target_text, st.session_state.selected_model, active_env_data.get("key", ""), active_env_data.get("url", ""), st.session_state.translator_profiles[st.session_state.active_t], st.session_state.reviewer_profiles[st.session_state.active_r], st.session_state.improver_profiles[st.session_state.active_i])
+                st.session_state.messages = st.session_state.messages[:rewind_idx]
+                st.session_state.messages.append({"user": target_text, "step1": s1, "step2": s2, "step3": s3, "model": st.session_state.selected_model})
+                st.rerun()
+
         st.markdown('<div id="bottom-anchor"></div>', unsafe_allow_html=True)
 
-    # 底部输入框
-    prompt = st.chat_input("输入需要翻译的临床/法规文本...")
-    if prompt:
-        active_env_data = st.session_state.api_envs.get(st.session_state.active_env, {})
-        exec_key = active_env_data.get("key", "")
-        if not exec_key:
-            st.error("❌ 当前选中的接口尚未配置凭据，请点击右上角【⚙️ 设置】。")
-        else:
-            record_model_usage(st.session_state.selected_model)
+# ----------------- 底部输入流处理 -----------------
+# 底部输入框
+prompt = st.chat_input("输入需要翻译的临床/法规文本...")
+if prompt:
+    active_env_data = st.session_state.api_envs.get(st.session_state.active_env, {})
+    exec_key = active_env_data.get("key", "")
+    if not exec_key:
+        st.error("❌ 当前选中的接口尚未配置凭据，请点击右上角【⚙️ 设置】。")
+    else:
+        record_model_usage(st.session_state.selected_model)
+        
+        # 挂起首次新输入操作，推迟到下一次渲染循环中的 chat_container 内执行 (解决图 1 的遮挡问题)
+        st.session_state.pending_new_prompt = prompt
+        st.rerun()
+
+# 接力执行挂起的新输入 (在主页面流的外部，但实际上层布局会被推入容器)
+if "pending_new_prompt" in st.session_state:
+    pending_prompt = st.session_state.pending_new_prompt
+    del st.session_state["pending_new_prompt"]
+    
+    active_env_data = st.session_state.api_envs.get(st.session_state.active_env, {})
+    
+    # 这里的 spinner 会自然地出现在对话流容器的最下方，输入框之上
+    with chat_container:
+        with st.chat_message("user"):
+            st.markdown(pending_prompt)
+        with st.chat_message("assistant"):
             with st.spinner(f"⏳ 正在调用 {st.session_state.selected_model} 执行 3-Step 法规翻译..."):
-                s1, s2, s3 = run_agentic_translation(prompt, st.session_state.selected_model, exec_key, active_env_data.get("url", ""), st.session_state.translator_profiles[st.session_state.active_t], st.session_state.reviewer_profiles[st.session_state.active_r], st.session_state.improver_profiles[st.session_state.active_i])
-                st.session_state.messages.append({"user": prompt, "step1": s1, "step2": s2, "step3": s3, "model": st.session_state.selected_model})
+                s1, s2, s3 = run_agentic_translation(pending_prompt, st.session_state.selected_model, active_env_data.get("key", ""), active_env_data.get("url", ""), st.session_state.translator_profiles[st.session_state.active_t], st.session_state.reviewer_profiles[st.session_state.active_r], st.session_state.improver_profiles[st.session_state.active_i])
+                st.session_state.messages.append({"user": pending_prompt, "step1": s1, "step2": s2, "step3": s3, "model": st.session_state.selected_model})
                 st.rerun()
