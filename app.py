@@ -15,19 +15,19 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# ==================== 界面样式优化注入 (极致空间利用) ====================
+# ==================== 界面样式优化注入 (精准对齐底部) ====================
 st.markdown("""
 <style>
-    /* 1. 极致压缩两侧空白，扩展页面最大宽度，整体上移 */
+    /* 1. 极致压缩两侧空白，扩展页面最大宽度 */
     .block-container { 
-        max-width: 96% !important; /* 充分利用宽屏 */
+        max-width: 96% !important; 
         padding-top: 1.5rem !important; 
         padding-left: 1.5rem !important;
         padding-right: 1.5rem !important;
         padding-bottom: 0 !important; 
     }
     
-    /* 2. 全局隐藏浏览器原生滚动条，保持页面极简清爽 */
+    /* 2. 全局隐藏浏览器原生滚动条 */
     ::-webkit-scrollbar { display: none !important; }
     * { -ms-overflow-style: none !important; scrollbar-width: none !important; }
     
@@ -40,7 +40,7 @@ st.markdown("""
         background-color: #f1f3f4; color: #202124; padding: 12px 16px; border-radius: 4px 16px 16px 16px; display: inline-block;
     }
 
-    /* 4. 左侧卡片极简分割线与紧凑布局 */
+    /* 4. 左侧卡片紧凑布局 */
     .st-emotion-cache-1wivap2 { padding: 1rem !important; } 
     .compact-header {
         border-bottom: 1px solid #e0e0e0;
@@ -50,17 +50,16 @@ st.markdown("""
     .compact-header p { margin: 0 !important; font-size: 0.9rem; color: #5f6368; }
     .compact-header strong { color: #202124; font-size: 1.05rem; }
 
-    /* 5. 提升输入框位置，紧贴对话区 */
+    /* 5. 提升输入框位置，增加底部 Padding 使其与左侧面板下边框完全平齐 */
     div[data-testid="stChatInput"] {
         padding-top: 0 !important;
-        padding-bottom: 15px !important;
-        margin-top: -10px !important;
+        padding-bottom: 2.5rem !important; /* 关键修改：向上托起输入框 */
     }
 
-    /* 6. Gemini 风格输入框正上方居中悬浮向下箭头 */
+    /* 6. Gemini 风格输入框正上方居中悬浮向下箭头 (同步上移) */
     .gemini-scroll-down {
         position: fixed;
-        bottom: 82px; /* 紧贴上移后的输入框 */
+        bottom: 98px; 
         left: 50%;
         transform: translateX(-50%);
         width: 34px;
@@ -150,8 +149,6 @@ def render_action_icons(text_to_copy: str, msg_idx: int, is_user: bool = True):
     copy_svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>'
     edit_svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>'
     rewind_svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>'
-
-    action_key = f"action_{msg_idx}"
     
     html_content = f"""
     <style>
@@ -164,7 +161,6 @@ def render_action_icons(text_to_copy: str, msg_idx: int, is_user: bool = True):
         button:hover {{ background-color: #f1f3f4; color: #1a73e8; }}
         svg {{ width: 16px; height: 16px; fill: currentColor; }}
     </style>
-    
     <button id="btn_copy" title="复制" onclick='
         navigator.clipboard.writeText({safe_text});
         const b = document.getElementById("btn_copy");
@@ -190,7 +186,6 @@ def render_action_icons(text_to_copy: str, msg_idx: int, is_user: bool = True):
     if is_user:
         action_val = st.text_input("hidden_action", key=f"action_trigger_{msg_idx}", label_visibility="collapsed")
         st.markdown(f'<div style="display:none;"><input type="text" id="action_trigger_{msg_idx}"></div>', unsafe_allow_html=True)
-        
         if action_val == "edit":
             st.session_state.editing_idx = msg_idx
             st.session_state[f"action_trigger_{msg_idx}"] = ""
@@ -341,7 +336,6 @@ active_turn = st.session_state.messages[-1] if len(st.session_state.messages) > 
 
 # ----------------- 左侧：极简紧凑的 Step 1 与 Step 2 -----------------
 with left_col:
-    # 缩减左侧卡片高度，给主页面留出空间
     with st.container(height=320, border=True):
         st.markdown(f'<div class="compact-header"><strong>Step 1 · 初步翻译</strong><br><p>🔵 规则：{st.session_state.active_t}</p></div>', unsafe_allow_html=True)
         if active_turn: st.markdown(active_turn["step1"])
@@ -355,8 +349,8 @@ with left_col:
 
 # ----------------- 右侧：主页面对话流 -----------------
 with right_col:
-    # 降低右侧容器高度至 650，拉起底部的输入框
-    chat_container = st.container(height=650, border=False)
+    # 同步调减容器高度以适配拉高后的输入框
+    chat_container = st.container(height=620, border=False) 
     with chat_container:
         for i, msg in enumerate(st.session_state.messages):
             # --- 用户消息 ---
@@ -378,7 +372,6 @@ with right_col:
                             st.rerun()
                 else:
                     st.markdown(msg["user"])
-                    # 原生 HTML 渲染完全无背景纯图标
                     render_action_icons(msg["user"], i, is_user=True)
 
             # --- Agent 回复终稿 ---
