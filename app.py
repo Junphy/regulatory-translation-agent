@@ -96,8 +96,8 @@ with right_col:
                         if st.button("✔️ 保存修改", key=f"save_edit_{i}"):
                             active_env_data = st.session_state.api_envs.get(st.session_state.active_env, {})
                             with st.spinner(f"⏳ 正在调用 {st.session_state.selected_model} 执行 3-Step 法规翻译..."):
-                                s1, s2, s3 = run_agentic_translation(edited_val, st.session_state.selected_model, active_env_data.get("key", ""), active_env_data.get("url", ""), st.session_state.translator_profiles[st.session_state.active_t], st.session_state.reviewer_profiles[st.session_state.active_r], st.session_state.improver_profiles[st.session_state.active_i])
-                                st.session_state.messages[i] = {"user": edited_val, "step1": s1, "step2": s2, "step3": s3, "model": st.session_state.selected_model}
+                                s1, s2, s3, direction = run_agentic_translation(edited_val, st.session_state.selected_model, active_env_data.get("key", ""), active_env_data.get("url", ""), st.session_state.translator_profiles[st.session_state.active_t], st.session_state.reviewer_profiles[st.session_state.active_r], st.session_state.improver_profiles[st.session_state.active_i])
+                                st.session_state.messages[i] = {"user": edited_val, "step1": s1, "step2": s2, "step3": s3, "model": st.session_state.selected_model, "direction": direction}
                                 st.session_state.messages = st.session_state.messages[:i + 1]
                                 st.session_state.editing_idx = None
                                 st.rerun()
@@ -111,7 +111,8 @@ with right_col:
 
             # Agent 回复气泡
             with st.chat_message("assistant"):
-                st.caption(f"Model: `{msg.get('model', st.session_state.selected_model)}` | 规则: `{st.session_state.active_i}` · Turn #{i + 1}")
+                direction_note = f" | 方向: {msg['direction']}" if msg.get("direction") else ""
+                st.caption(f"Model: `{msg.get('model', st.session_state.selected_model)}` | 规则: `{st.session_state.active_i}`{direction_note} · Turn #{i + 1}")
                 st.markdown(msg["step3"])
                 render_action_icons(msg["step3"], i, is_user=False)
 
@@ -122,9 +123,9 @@ with right_col:
             active_env_data = st.session_state.api_envs.get(st.session_state.active_env, {})
             with st.spinner(f"⏳ 正在调用 {st.session_state.selected_model} 执行 3-Step 法规翻译..."):
                 target_text = st.session_state.messages[rewind_idx]["user"]
-                s1, s2, s3 = run_agentic_translation(target_text, st.session_state.selected_model, active_env_data.get("key", ""), active_env_data.get("url", ""), st.session_state.translator_profiles[st.session_state.active_t], st.session_state.reviewer_profiles[st.session_state.active_r], st.session_state.improver_profiles[st.session_state.active_i])
+                s1, s2, s3, direction = run_agentic_translation(target_text, st.session_state.selected_model, active_env_data.get("key", ""), active_env_data.get("url", ""), st.session_state.translator_profiles[st.session_state.active_t], st.session_state.reviewer_profiles[st.session_state.active_r], st.session_state.improver_profiles[st.session_state.active_i])
                 st.session_state.messages = st.session_state.messages[:rewind_idx]
-                st.session_state.messages.append({"user": target_text, "step1": s1, "step2": s2, "step3": s3, "model": st.session_state.selected_model})
+                st.session_state.messages.append({"user": target_text, "step1": s1, "step2": s2, "step3": s3, "model": st.session_state.selected_model, "direction": direction})
                 st.rerun()
 
         st.markdown('<div id="bottom-anchor"></div>', unsafe_allow_html=True)
@@ -151,6 +152,6 @@ if "pending_new_prompt" in st.session_state:
             st.markdown(pending_prompt)
         with st.chat_message("assistant"):
             with st.spinner(f"⏳ 正在调用 {st.session_state.selected_model} 执行 3-Step 法规翻译..."):
-                s1, s2, s3 = run_agentic_translation(pending_prompt, st.session_state.selected_model, active_env_data.get("key", ""), active_env_data.get("url", ""), st.session_state.translator_profiles[st.session_state.active_t], st.session_state.reviewer_profiles[st.session_state.active_r], st.session_state.improver_profiles[st.session_state.active_i])
-                st.session_state.messages.append({"user": pending_prompt, "step1": s1, "step2": s2, "step3": s3, "model": st.session_state.selected_model})
+                s1, s2, s3, direction = run_agentic_translation(pending_prompt, st.session_state.selected_model, active_env_data.get("key", ""), active_env_data.get("url", ""), st.session_state.translator_profiles[st.session_state.active_t], st.session_state.reviewer_profiles[st.session_state.active_r], st.session_state.improver_profiles[st.session_state.active_i])
+                st.session_state.messages.append({"user": pending_prompt, "step1": s1, "step2": s2, "step3": s3, "model": st.session_state.selected_model, "direction": direction})
                 st.rerun()

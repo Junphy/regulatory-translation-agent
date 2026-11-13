@@ -2,7 +2,32 @@
 import os
 import json
 import streamlit as st
-from prompts import DEFAULT_TRANSLATOR, DEFAULT_REVIEWER, DEFAULT_IMPROVER
+from prompts import (
+    DEFAULT_PROFILE_NAME, OPTIMIZED_V1_NAME,
+    DEFAULT_TRANSLATOR, DEFAULT_REVIEWER, DEFAULT_IMPROVER,
+    OPTIMIZED_V1_TRANSLATOR, OPTIMIZED_V1_REVIEWER, OPTIMIZED_V1_IMPROVER,
+)
+
+# profile 的格式版本。版本 2 起，profile 内容是“附加规则”（追加在 system 消息之后）；
+# 旧版配置里保存的是整段 system prompt，直接沿用会与参考模板重复，所以读取时归档并重置。
+PROFILE_SCHEMA_VERSION = 2
+_PROFILE_KEYS = ("translator_profiles", "active_translator", "reviewer_profiles", "active_reviewer", "improver_profiles", "active_improver")
+
+def _migrate_skills(skills_cfg):
+    """返回 (当前格式的 skills 配置, 需要保留的旧版归档)。旧配置不会被删除，只是归档到 skills_legacy。"""
+    legacy = dict(skills_cfg.get("skills_legacy", {}))
+    if skills_cfg.get("profile_schema") == PROFILE_SCHEMA_VERSION:
+        return skills_cfg, legacy
+    old = {k: skills_cfg[k] for k in _PROFILE_KEYS if k in skills_cfg}
+    if old:
+        legacy["v1_full_prompt_profiles"] = old
+    return {"profile_schema": PROFILE_SCHEMA_VERSION}, legacy
+
+def _build_profiles(saved, default_text, optimized_text):
+    profiles = dict(saved or {})
+    profiles[DEFAULT_PROFILE_NAME] = default_text  # 默认 profile 固定为参考原版，界面中只读
+    profiles.setdefault(OPTIMIZED_V1_NAME, optimized_text)  # 用户对优化版1的修改会被保留
+    return profiles
 
 def load_config():
     default_cfg = {
@@ -32,13 +57,14 @@ def init_session_state():
     if "available_models" not in st.session_state: st.session_state.available_models = [st.session_state.selected_model]
     if "model_history" not in st.session_state: st.session_state.model_history = [{"id": st.session_state.selected_model, "count": 1}]
 
-    skills_cfg = config.get("skills", {})
-    if "translator_profiles" not in st.session_state: st.session_state.translator_profiles = skills_cfg.get("translator_profiles", {"标准初译 (默认)": DEFAULT_TRANSLATOR})
-    if "reviewer_profiles" not in st.session_state: st.session_state.reviewer_profiles = skills_cfg.get("reviewer_profiles", {"严格审校 (默认)": DEFAULT_REVIEWER})
-    if "improver_profiles" not in st.session_state: st.session_state.improver_profiles = skills_cfg.get("improver_profiles", {"规则定稿 (默认)": DEFAULT_IMPROVER})
-    if "active_t" not in st.session_state: st.session_state.active_t = skills_cfg.get("active_translator", "标准初译 (默认)")
-    if "active_r" not in st.session_state: st.session_state.active_r = skills_cfg.get("active_reviewer", "严格审校 (默认)")
-    if "active_i" not in st.session_state: st.session_state.active_i = skills_cfg.get("active_improver", "规则定稿 (默认)")
+    skills_cfg, legacy = _migrate_skills(config.get("skills", {}))
+    if "skills_legacy" not in st.session_state: st.session_state.skills_legacy = legacy
+    if "translator_profiles" not in st.session_state: st.session_state.translator_profiles = _build_profiles(skills_cfg.get("translator_profiles"), DEFAULT_TRANSLATOR, OPTIMIZED_V1_TRANSLATOR)
+    if "reviewer_profiles" not in st.session_state: st.session_state.reviewer_profiles = _build_profiles(skills_cfg.get("reviewer_profiles"), DEFAULT_REVIEWER, OPTIMIZED_V1_REVIEWER)
+    if "improver_profiles" not in st.session_state: st.session_state.improver_profiles = _build_profiles(skills_cfg.get("improver_profiles"), DEFAULT_IMPROVER, OPTIMIZED_V1_IMPROVER)
+    if "active_t" not in st.session_state: st.session_state.active_t = skills_cfg.get("active_translator", DEFAULT_PROFILE_NAME)
+    if "active_r" not in st.session_state: st.session_state.active_r = skills_cfg.get("active_reviewer", DEFAULT_PROFILE_NAME)
+    if "active_i" not in st.session_state: st.session_state.active_i = skills_cfg.get("active_improver", DEFAULT_PROFILE_NAME)
 
     if "messages" not in st.session_state: st.session_state.messages = []
     if "editing_idx" not in st.session_state: st.session_state.editing_idx = None

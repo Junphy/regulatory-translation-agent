@@ -1,0 +1,599 @@
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..592f349
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,12 @@
++# 本地配置：设置界面会把 API 密钥明文保存到这里，不要提交
++config.json
++
++# 环境变量与密钥
++.env
++.streamlit/secrets.toml
++
++# Python
++__pycache__/
++*.pyc
++.venv/
++venv/
+diff --git a/README.md b/README.md
+index 70ed746..ee3b910 100644
+--- a/README.md
++++ b/README.md
+@@ -1,4 +1,40 @@
+ # regulatory-translation-agent
+-An intelligent agent for regulatory and clinical translation complying with ICH, FDA, and CDE standards.
+-## Acknowledgments
+-This project is built upon or inspired by [Andrew Ng's Translation Agent](https://github.com/andrewyng/translation-agent), which demonstrates the power of reflection agentic workflows in machine translation.
++
++面向法规与临床文本的三步翻译智能体（初译、审校、定稿），目标是符合 ICH、FDA 与 CDE 的术语和格式要求。
++
++## 与参考项目的关系
++
++本项目复刻 [Andrew Ng 的 Translation Agent](https://github.com/andrewyng/translation-agent)（`src/translation_agent/utils.py`）中的反思式翻译流程，并且**只在 prompt 层做优化**。
++
++核心流程的复刻范围是参考项目的单块路径：`one_chunk_initial_translation`、`one_chunk_reflect_on_translation`、`one_chunk_improve_translation`。三步的 user 模板（任务说明与 XML 标签）与参考项目逐字一致，温度为 0.3，`top_p` 为 1。
++
++## 与参考项目的偏离
++
++以下偏离都在 `agent_core.py` 中以 `DEVIATION` 标出：
++
++- **不做分块**：没有 `translate()` 入口与 `multichunk_*` 函数，输入长度由使用者自行控制，超出模型上限时由接口报错。
++- **语言方向自动判断**：参考项目由调用方显式传入语言；这里用 `detect_languages` 根据汉字个数与英文单词个数判断，只支持中英互译。
++- **`country` 固定为空**：走参考项目的无 country 分支，不要求“口语风格”。
++- **附加规则**：界面里的 profile 内容追加在 system 消息的角色句之后；为空时发给模型的消息与参考项目逐字一致。
++- **模型调用**：`get_completion` 增加 `client` 参数以支持自定义 `base_url` 与 API Key，并去掉了三步用不到的 `json_mode`。
++- **返回值**：参考项目只返回最终译文；这里返回初译、审校意见、定稿与方向标签，供界面展示。
++
++## Prompt 的组织方式
++
++界面中每一步都可以选择 profile，profile 的内容是“附加规则”：
++
++- **参考原版（默认）**：没有附加规则，只使用参考项目的原文。该 profile 在界面中只读。
++- **优化版1**：基于此前的完整 prompt 整理而成，增加了书面语要求。
++
++可以在设置里基于任一模板“另存为新模板”。
++
++## 配置与安全
++
++设置界面会把 API 密钥明文保存到本地的 `config.json`，该文件已被 `.gitignore` 忽略。升级到本版本后首次读取旧版 `config.json` 时，旧 profile 会归档到 `skills_legacy`（点击“保存全部配置并生效”后写入文件），并重置为新的内置 profile。
++
++## 运行
++
++```bash
++pip install -r requirements.txt
++streamlit run app.py
++```
+diff --git a/agent_core.py b/agent_core.py
+index 639ed04..7bac23f 100644
+--- a/agent_core.py
++++ b/agent_core.py
+@@ -1,31 +1,239 @@
+ # agent_core.py
++"""
++反思式三步翻译流程：初译 -> 审校（reflection）-> 定稿（improvement）。
++
++三个步骤是对 andrewyng/translation-agent 的 src/translation_agent/utils.py
++中【单块路径】的复刻，user 模板与参考项目逐字一致。
++与参考项目的全部偏离都用 "# DEVIATION" 标出，共 5 处：
++
++1. get_completion 增加 client 参数（支持界面里配置的 base_url 与 API Key），去掉未被三步使用的 json_mode。
++2. 三个 one_chunk_* 函数的第一个参数是 llm（见 make_llm），其余参数与参考一致，末尾多一个 extra_rules。
++3. extra_rules（界面里的 profile 内容）追加在 system 消息的角色句之后；为空时与参考完全一致。
++4. 不做分块：输入长度由使用者自行控制，因此没有 translate() 入口与 multichunk_* 函数。
++5. 语言方向由 detect_languages 自动判断，country 固定为空字符串（走参考项目的无 country 分支）。
++"""
+ import re
++from typing import Callable, Tuple
++
+ from openai import OpenAI
+ 
+-def auto_detect_language(text):
+-    if len(re.findall(r'[\u4e00-\u9fff]', text)) > 2 or (len(text.strip()) > 0 and len(re.findall(r'[\u4e00-\u9fff]', text)) / len(text.strip()) > 0.05):
+-        return "Chinese", "English", "United States"
+-    return "English", "Chinese", "China"
+ 
+-def call_llm(client, model, system_prompt, user_prompt):
++def get_completion(
++    client,  # DEVIATION: 参考项目使用模块级全局 client，这里由调用方传入
++    prompt: str,
++    system_message: str = "You are a helpful assistant.",
++    model: str = "gpt-4-turbo",
++    temperature: float = 0.3,
++) -> str:
++    """Generate a completion using an OpenAI-compatible API."""
++
+     response = client.chat.completions.create(
+-        model=model, 
+-        messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}], 
+-        temperature=0.3
++        model=model,
++        temperature=temperature,
++        top_p=1,
++        messages=[
++            {"role": "system", "content": system_message},
++            {"role": "user", "content": prompt},
++        ],
+     )
+     return response.choices[0].message.content
+ 
++
++def make_llm(client, model: str) -> Callable[..., str]:  # DEVIATION
++    """把 client 与 model 绑定成 llm(prompt, system_message) 调用。"""
++
++    def llm(prompt: str, system_message: str = "You are a helpful assistant.") -> str:
++        return get_completion(client, prompt, system_message=system_message, model=model)
++
++    return llm
++
++
++def with_rules(system_message: str, extra_rules: str = "") -> str:  # DEVIATION
++    """把附加规则追加到 system 消息之后；规则为空时原样返回，与参考项目一致。"""
++
++    extra_rules = (extra_rules or "").strip()
++    if not extra_rules:
++        return system_message
++    return f"{system_message}\n\n{extra_rules}"
++
++
++def one_chunk_initial_translation(
++    llm, source_lang: str, target_lang: str, source_text: str, extra_rules: str = ""
++) -> str:
++    """Translate the entire text as one chunk using an LLM."""
++
++    system_message = f"You are an expert linguist, specializing in translation from {source_lang} to {target_lang}."
++
++    translation_prompt = f"""This is an {source_lang} to {target_lang} translation, please provide the {target_lang} translation for this text. \
++Do not provide any explanations or text apart from the translation.
++{source_lang}: {source_text}
++
++{target_lang}:"""
++
++    translation = llm(translation_prompt, system_message=with_rules(system_message, extra_rules))
++
++    return translation
++
++
++def one_chunk_reflect_on_translation(
++    llm,
++    source_lang: str,
++    target_lang: str,
++    source_text: str,
++    translation_1: str,
++    country: str = "",
++    extra_rules: str = "",
++) -> str:
++    """Use an LLM to reflect on the translation, treating the entire text as one chunk."""
++
++    system_message = f"You are an expert linguist specializing in translation from {source_lang} to {target_lang}. \
++You will be provided with a source text and its translation and your goal is to improve the translation."
++
++    if country != "":
++        reflection_prompt = f"""Your task is to carefully read a source text and a translation from {source_lang} to {target_lang}, and then give constructive criticism and helpful suggestions to improve the translation. \
++The final style and tone of the translation should match the style of {target_lang} colloquially spoken in {country}.
++
++The source text and initial translation, delimited by XML tags <SOURCE_TEXT></SOURCE_TEXT> and <TRANSLATION></TRANSLATION>, are as follows:
++
++<SOURCE_TEXT>
++{source_text}
++</SOURCE_TEXT>
++
++<TRANSLATION>
++{translation_1}
++</TRANSLATION>
++
++When writing suggestions, pay attention to whether there are ways to improve the translation's \n\
++(i) accuracy (by correcting errors of addition, mistranslation, omission, or untranslated text),\n\
++(ii) fluency (by applying {target_lang} grammar, spelling and punctuation rules, and ensuring there are no unnecessary repetitions),\n\
++(iii) style (by ensuring the translations reflect the style of the source text and take into account any cultural context),\n\
++(iv) terminology (by ensuring terminology use is consistent and reflects the source text domain; and by only ensuring you use equivalent idioms {target_lang}).\n\
++
++Write a list of specific, helpful and constructive suggestions for improving the translation.
++Each suggestion should address one specific part of the translation.
++Output only the suggestions and nothing else."""
++
++    else:
++        reflection_prompt = f"""Your task is to carefully read a source text and a translation from {source_lang} to {target_lang}, and then give constructive criticisms and helpful suggestions to improve the translation. \
++
++The source text and initial translation, delimited by XML tags <SOURCE_TEXT></SOURCE_TEXT> and <TRANSLATION></TRANSLATION>, are as follows:
++
++<SOURCE_TEXT>
++{source_text}
++</SOURCE_TEXT>
++
++<TRANSLATION>
++{translation_1}
++</TRANSLATION>
++
++When writing suggestions, pay attention to whether there are ways to improve the translation's \n\
++(i) accuracy (by correcting errors of addition, mistranslation, omission, or untranslated text),\n\
++(ii) fluency (by applying {target_lang} grammar, spelling and punctuation rules, and ensuring there are no unnecessary repetitions),\n\
++(iii) style (by ensuring the translations reflect the style of the source text and take into account any cultural context),\n\
++(iv) terminology (by ensuring terminology use is consistent and reflects the source text domain; and by only ensuring you use equivalent idioms {target_lang}).\n\
++
++Write a list of specific, helpful and constructive suggestions for improving the translation.
++Each suggestion should address one specific part of the translation.
++Output only the suggestions and nothing else."""
++
++    reflection = llm(reflection_prompt, system_message=with_rules(system_message, extra_rules))
++    return reflection
++
++
++def one_chunk_improve_translation(
++    llm,
++    source_lang: str,
++    target_lang: str,
++    source_text: str,
++    translation_1: str,
++    reflection: str,
++    extra_rules: str = "",
++) -> str:
++    """Use the reflection to improve the translation, treating the entire text as one chunk."""
++
++    system_message = f"You are an expert linguist, specializing in translation editing from {source_lang} to {target_lang}."
++
++    prompt = f"""Your task is to carefully read, then edit, a translation from {source_lang} to {target_lang}, taking into
++account a list of expert suggestions and constructive criticisms.
++
++The source text, the initial translation, and the expert linguist suggestions are delimited by XML tags <SOURCE_TEXT></SOURCE_TEXT>, <TRANSLATION></TRANSLATION> and <EXPERT_SUGGESTIONS></EXPERT_SUGGESTIONS> \
++as follows:
++
++<SOURCE_TEXT>
++{source_text}
++</SOURCE_TEXT>
++
++<TRANSLATION>
++{translation_1}
++</TRANSLATION>
++
++<EXPERT_SUGGESTIONS>
++{reflection}
++</EXPERT_SUGGESTIONS>
++
++Please take into account the expert suggestions when editing the translation. Edit the translation by ensuring:
++
++(i) accuracy (by correcting errors of addition, mistranslation, omission, or untranslated text),
++(ii) fluency (by applying {target_lang} grammar, spelling and punctuation rules and ensuring there are no unnecessary repetitions), \
++(iii) style (by ensuring the translations reflect the style of the source text)
++(iv) terminology (inappropriate for context, inconsistent use), or
++(v) other errors.
++
++Output only the new translation and nothing else."""
++
++    translation_2 = llm(prompt, with_rules(system_message, extra_rules))
++
++    return translation_2
++
++
++# ==================== 语言方向自动判断（参考项目没有这一步，由调用方显式传参） ====================
++# DEVIATION: 参考项目要求调用方传入 source_lang、target_lang；这里根据文本自动判断。
++# 规则：只统计汉字个数与英文单词个数（忽略数字、标点、单位符号），汉字个数不少于英文单词个数时视为中文。
++# 这是启发式规则，只支持中英互译；没有汉字时一律视为英文。
++_HAN_CHAR = re.compile(r"[一-鿿]")
++_LATIN_WORD = re.compile(r"[A-Za-z]{2,}")
++
++_DIRECTION_LABELS = {
++    ("Chinese", "English"): "中译英",
++    ("English", "Chinese"): "英译中",
++}
++
++
++def detect_languages(text: str) -> Tuple[str, str]:
++    """返回 (source_lang, target_lang)。"""
++
++    han_count = len(_HAN_CHAR.findall(text))
++    latin_word_count = len(_LATIN_WORD.findall(text))
++    if han_count > 0 and han_count >= latin_word_count:
++        return "Chinese", "English"
++    return "English", "Chinese"
++
++
+ def run_agentic_translation(source_text, model_name, api_key, base_url, trans_skill, rev_skill, imp_skill):
++    """
++    按参考项目 one_chunk_translate_text 的顺序依次执行三步。
++
++    DEVIATION: 参考项目只返回最终译文；界面需要展示每一步，所以这里返回
++    (初译, 审校意见, 定稿, 方向标签)。trans_skill、rev_skill、imp_skill 是界面里选中的
++    profile 内容，作为附加规则追加到对应步骤的 system 消息之后。
++    """
+     client = OpenAI(api_key=api_key, base_url=base_url)
+-    source_lang, target_lang, country = auto_detect_language(source_text)
+-    
+-    init_prompt = f"Translate the following {source_lang} text into {target_lang} for {country}:\n\n{source_text}"
+-    init_translation = call_llm(client, model_name, trans_skill, init_prompt)
+-    
+-    review_prompt = f"Source Text ({source_lang}):\n{source_text}\n\nInitial Translation ({target_lang}):\n{init_translation}\n\nCritique this translation strictly against regulatory requirements, terminology consistency, and accuracy."
+-    critique = call_llm(client, model_name, rev_skill, review_prompt)
+-    
+-    improve_prompt = f"Source Text ({source_lang}):\n{source_text}\n\nInitial Translation:\n{init_translation}\n\nReviewer Critique:\n{critique}\n\nProvide the final, polished translation incorporating the critique above. Output ONLY the final translation without conversational text."
+-    final_translation = call_llm(client, model_name, imp_skill, improve_prompt)
+-    
+-    return f"{init_translation}", f"{critique}", final_translation
++    llm = make_llm(client, model_name)
++
++    source_lang, target_lang = detect_languages(source_text)
++    country = ""  # DEVIATION: 固定为空，走参考项目的无 country 分支（不要求口语风格）
++
++    translation_1 = one_chunk_initial_translation(
++        llm, source_lang, target_lang, source_text, trans_skill
++    )
++
++    reflection = one_chunk_reflect_on_translation(
++        llm, source_lang, target_lang, source_text, translation_1, country, rev_skill
++    )
++
++    translation_2 = one_chunk_improve_translation(
++        llm, source_lang, target_lang, source_text, translation_1, reflection, imp_skill
++    )
++
++    direction = _DIRECTION_LABELS[(source_lang, target_lang)]
++    return translation_1, reflection, translation_2, direction
+diff --git a/app.py b/app.py
+index e0cd6cd..1923dc1 100644
+--- a/app.py
++++ b/app.py
+@@ -96,8 +96,8 @@ with right_col:
+                         if st.button("✔️ 保存修改", key=f"save_edit_{i}"):
+                             active_env_data = st.session_state.api_envs.get(st.session_state.active_env, {})
+                             with st.spinner(f"⏳ 正在调用 {st.session_state.selected_model} 执行 3-Step 法规翻译..."):
+-                                s1, s2, s3 = run_agentic_translation(edited_val, st.session_state.selected_model, active_env_data.get("key", ""), active_env_data.get("url", ""), st.session_state.translator_profiles[st.session_state.active_t], st.session_state.reviewer_profiles[st.session_state.active_r], st.session_state.improver_profiles[st.session_state.active_i])
+-                                st.session_state.messages[i] = {"user": edited_val, "step1": s1, "step2": s2, "step3": s3, "model": st.session_state.selected_model}
++                                s1, s2, s3, direction = run_agentic_translation(edited_val, st.session_state.selected_model, active_env_data.get("key", ""), active_env_data.get("url", ""), st.session_state.translator_profiles[st.session_state.active_t], st.session_state.reviewer_profiles[st.session_state.active_r], st.session_state.improver_profiles[st.session_state.active_i])
++                                st.session_state.messages[i] = {"user": edited_val, "step1": s1, "step2": s2, "step3": s3, "model": st.session_state.selected_model, "direction": direction}
+                                 st.session_state.messages = st.session_state.messages[:i + 1]
+                                 st.session_state.editing_idx = None
+                                 st.rerun()
+@@ -111,7 +111,8 @@ with right_col:
+ 
+             # Agent 回复气泡
+             with st.chat_message("assistant"):
+-                st.caption(f"Model: `{msg.get('model', st.session_state.selected_model)}` | 规则: `{st.session_state.active_i}` · Turn #{i + 1}")
++                direction_note = f" | 方向: {msg['direction']}" if msg.get("direction") else ""
++                st.caption(f"Model: `{msg.get('model', st.session_state.selected_model)}` | 规则: `{st.session_state.active_i}`{direction_note} · Turn #{i + 1}")
+                 st.markdown(msg["step3"])
+                 render_action_icons(msg["step3"], i, is_user=False)
+ 
+@@ -122,9 +123,9 @@ with right_col:
+             active_env_data = st.session_state.api_envs.get(st.session_state.active_env, {})
+             with st.spinner(f"⏳ 正在调用 {st.session_state.selected_model} 执行 3-Step 法规翻译..."):
+                 target_text = st.session_state.messages[rewind_idx]["user"]
+-                s1, s2, s3 = run_agentic_translation(target_text, st.session_state.selected_model, active_env_data.get("key", ""), active_env_data.get("url", ""), st.session_state.translator_profiles[st.session_state.active_t], st.session_state.reviewer_profiles[st.session_state.active_r], st.session_state.improver_profiles[st.session_state.active_i])
++                s1, s2, s3, direction = run_agentic_translation(target_text, st.session_state.selected_model, active_env_data.get("key", ""), active_env_data.get("url", ""), st.session_state.translator_profiles[st.session_state.active_t], st.session_state.reviewer_profiles[st.session_state.active_r], st.session_state.improver_profiles[st.session_state.active_i])
+                 st.session_state.messages = st.session_state.messages[:rewind_idx]
+-                st.session_state.messages.append({"user": target_text, "step1": s1, "step2": s2, "step3": s3, "model": st.session_state.selected_model})
++                st.session_state.messages.append({"user": target_text, "step1": s1, "step2": s2, "step3": s3, "model": st.session_state.selected_model, "direction": direction})
+                 st.rerun()
+ 
+         st.markdown('<div id="bottom-anchor"></div>', unsafe_allow_html=True)
+@@ -151,6 +152,6 @@ if "pending_new_prompt" in st.session_state:
+             st.markdown(pending_prompt)
+         with st.chat_message("assistant"):
+             with st.spinner(f"⏳ 正在调用 {st.session_state.selected_model} 执行 3-Step 法规翻译..."):
+-                s1, s2, s3 = run_agentic_translation(pending_prompt, st.session_state.selected_model, active_env_data.get("key", ""), active_env_data.get("url", ""), st.session_state.translator_profiles[st.session_state.active_t], st.session_state.reviewer_profiles[st.session_state.active_r], st.session_state.improver_profiles[st.session_state.active_i])
+-                st.session_state.messages.append({"user": pending_prompt, "step1": s1, "step2": s2, "step3": s3, "model": st.session_state.selected_model})
++                s1, s2, s3, direction = run_agentic_translation(pending_prompt, st.session_state.selected_model, active_env_data.get("key", ""), active_env_data.get("url", ""), st.session_state.translator_profiles[st.session_state.active_t], st.session_state.reviewer_profiles[st.session_state.active_r], st.session_state.improver_profiles[st.session_state.active_i])
++                st.session_state.messages.append({"user": pending_prompt, "step1": s1, "step2": s2, "step3": s3, "model": st.session_state.selected_model, "direction": direction})
+                 st.rerun()
+diff --git a/config_manager.py b/config_manager.py
+index 012a3e4..a9f5980 100644
+--- a/config_manager.py
++++ b/config_manager.py
+@@ -2,7 +2,32 @@
+ import os
+ import json
+ import streamlit as st
+-from prompts import DEFAULT_TRANSLATOR, DEFAULT_REVIEWER, DEFAULT_IMPROVER
++from prompts import (
++    DEFAULT_PROFILE_NAME, OPTIMIZED_V1_NAME,
++    DEFAULT_TRANSLATOR, DEFAULT_REVIEWER, DEFAULT_IMPROVER,
++    OPTIMIZED_V1_TRANSLATOR, OPTIMIZED_V1_REVIEWER, OPTIMIZED_V1_IMPROVER,
++)
++
++# profile 的格式版本。版本 2 起，profile 内容是“附加规则”（追加在 system 消息之后）；
++# 旧版配置里保存的是整段 system prompt，直接沿用会与参考模板重复，所以读取时归档并重置。
++PROFILE_SCHEMA_VERSION = 2
++_PROFILE_KEYS = ("translator_profiles", "active_translator", "reviewer_profiles", "active_reviewer", "improver_profiles", "active_improver")
++
++def _migrate_skills(skills_cfg):
++    """返回 (当前格式的 skills 配置, 需要保留的旧版归档)。旧配置不会被删除，只是归档到 skills_legacy。"""
++    legacy = dict(skills_cfg.get("skills_legacy", {}))
++    if skills_cfg.get("profile_schema") == PROFILE_SCHEMA_VERSION:
++        return skills_cfg, legacy
++    old = {k: skills_cfg[k] for k in _PROFILE_KEYS if k in skills_cfg}
++    if old:
++        legacy["v1_full_prompt_profiles"] = old
++    return {"profile_schema": PROFILE_SCHEMA_VERSION}, legacy
++
++def _build_profiles(saved, default_text, optimized_text):
++    profiles = dict(saved or {})
++    profiles[DEFAULT_PROFILE_NAME] = default_text  # 默认 profile 固定为参考原版，界面中只读
++    profiles.setdefault(OPTIMIZED_V1_NAME, optimized_text)  # 用户对优化版1的修改会被保留
++    return profiles
+ 
+ def load_config():
+     default_cfg = {
+@@ -32,13 +57,14 @@ def init_session_state():
+     if "available_models" not in st.session_state: st.session_state.available_models = [st.session_state.selected_model]
+     if "model_history" not in st.session_state: st.session_state.model_history = [{"id": st.session_state.selected_model, "count": 1}]
+ 
+-    skills_cfg = config.get("skills", {})
+-    if "translator_profiles" not in st.session_state: st.session_state.translator_profiles = skills_cfg.get("translator_profiles", {"标准初译 (默认)": DEFAULT_TRANSLATOR})
+-    if "reviewer_profiles" not in st.session_state: st.session_state.reviewer_profiles = skills_cfg.get("reviewer_profiles", {"严格审校 (默认)": DEFAULT_REVIEWER})
+-    if "improver_profiles" not in st.session_state: st.session_state.improver_profiles = skills_cfg.get("improver_profiles", {"规则定稿 (默认)": DEFAULT_IMPROVER})
+-    if "active_t" not in st.session_state: st.session_state.active_t = skills_cfg.get("active_translator", "标准初译 (默认)")
+-    if "active_r" not in st.session_state: st.session_state.active_r = skills_cfg.get("active_reviewer", "严格审校 (默认)")
+-    if "active_i" not in st.session_state: st.session_state.active_i = skills_cfg.get("active_improver", "规则定稿 (默认)")
++    skills_cfg, legacy = _migrate_skills(config.get("skills", {}))
++    if "skills_legacy" not in st.session_state: st.session_state.skills_legacy = legacy
++    if "translator_profiles" not in st.session_state: st.session_state.translator_profiles = _build_profiles(skills_cfg.get("translator_profiles"), DEFAULT_TRANSLATOR, OPTIMIZED_V1_TRANSLATOR)
++    if "reviewer_profiles" not in st.session_state: st.session_state.reviewer_profiles = _build_profiles(skills_cfg.get("reviewer_profiles"), DEFAULT_REVIEWER, OPTIMIZED_V1_REVIEWER)
++    if "improver_profiles" not in st.session_state: st.session_state.improver_profiles = _build_profiles(skills_cfg.get("improver_profiles"), DEFAULT_IMPROVER, OPTIMIZED_V1_IMPROVER)
++    if "active_t" not in st.session_state: st.session_state.active_t = skills_cfg.get("active_translator", DEFAULT_PROFILE_NAME)
++    if "active_r" not in st.session_state: st.session_state.active_r = skills_cfg.get("active_reviewer", DEFAULT_PROFILE_NAME)
++    if "active_i" not in st.session_state: st.session_state.active_i = skills_cfg.get("active_improver", DEFAULT_PROFILE_NAME)
+ 
+     if "messages" not in st.session_state: st.session_state.messages = []
+     if "editing_idx" not in st.session_state: st.session_state.editing_idx = None
+diff --git a/prompts.py b/prompts.py
+index 64db403..e890bef 100644
+--- a/prompts.py
++++ b/prompts.py
+@@ -1,53 +1,71 @@
+ # prompts.py
++"""
++三步流程的 profile 内容。
+ 
+-# ==================== Step 1: Initial Translation ====================
+-DEFAULT_TRANSLATOR = """You are a specialized translation engine for life sciences and regulatory documents. You specialize in biology, pharmacy, clinical medicine, pharmacovigilance (PV), PK/PD, and FDA/ICH/CDE regulatory filings.
++每个 profile 是“附加规则”：它会被追加在参考项目 system 消息的角色句之后，
++而任务说明与输入材料的模板（user 消息）固定使用参考项目的原文，写在 agent_core.py 里。
++所以 profile 里不需要再写角色介绍、任务说明或“只输出译文”之类的输出要求。
+ 
+-Your ONLY task is to provide a faithful, accurate, and complete initial translation of the source text. Do not try to polish the text beautifully at this stage; focus on strict accuracy and preserving the original meaning.
++- 参考原版（默认）：附加规则为空，发给模型的消息与参考项目逐字一致。
++- 优化版1：基于此前的完整 prompt 整理而成，整理时的改动见各段上方的说明。
++"""
+ 
+-Core Directives:
+-1. Completeness & Accuracy: Translate every element precisely. Do not skip, omit, or summarize regardless of length. Prioritize ICH/FDA/CDE standard terminology.
+-2. Context-Sensitive Terminology: Strictly differentiate context based on subjects:
+-   - Animal/Non-clinical: Use terms like "sacrifice/euthanize/necropsy" (处死/解剖), keep weight-standardized doses (e.g., mg/kg), and use "经口给药" for oral dosing (to Chinese).
+-   - Human/Clinical (patients/subjects): Avoid animal endpoint terms, keep fixed doses (e.g., 10 mg QD), and use "口服" for oral dosing (to Chinese).
+-3. Non-Translated Elements: Keep abbreviations (e.g., SAE, AE), units of measurement (mg, mL, mmHg), and math/chemistry/trademark symbols exactly as in the source. Ignore but precisely restore any tags or placeholders.
+-4. Formatting Rules: 
+-   - EN to ZH: Convert dates to "yyyy年mm月dd日" (except in IDs/codes). Use full-width punctuation. No space between Chinese characters and numbers/English letters. Keep a half-width space between a number and a following English unit (e.g., 5 mg). No space between a number and a Chinese unit (e.g., 5周).
+-   - ZH to EN: Convert dates to "dd-mmm-yyyy". Use standard English punctuation and spacing.
+-5. Mixed Language: Translate non-target language portions into the target language and adjust the retained target language portions for fluency.
++DEFAULT_PROFILE_NAME = "参考原版（默认）"
++OPTIMIZED_V1_NAME = "优化版1"
+ 
+-Output ONLY the pure translated text. Do not expand, infer, add conversational filler, or output markdown wrappers."""
++# ==================== 参考原版（默认）：无附加规则 ====================
++DEFAULT_TRANSLATOR = ""
++DEFAULT_REVIEWER = ""
++DEFAULT_IMPROVER = ""
+ 
+-# ==================== Step 2: Reflection / Critique (Aligned with Andrew Ng's Translation Agent) ====================
+-DEFAULT_REVIEWER = """You are an expert linguist and top-tier life sciences technical literature reviewer.
+-Your task is to carefully read a source text and its initial translation, and then give constructive criticism and helpful suggestions to improve the translation.
++# ==================== 优化版1 ====================
++# 整理说明：
++# - 去掉与参考模板重复的部分（角色介绍、任务说明、“只输出译文或建议”）。
++# - 保留此前的领域设定、术语与格式规则、审校侧重点、定稿标准。
++# - 新增一条“书面语”要求（三步都有），用来替代参考项目中被去掉的“口语风格”要求。
++# - 定稿步骤的格式规则统一为初译步骤的完整版本（此前定稿版缺少“ID 或代码中的日期不转换”
++#   与“数字与中文单位之间不加空格”两条）。
+ 
+-The final translation should be highly accurate, natural, and easy to understand, and should read like a fluently published original regulatory document.
++OPTIMIZED_V1_TRANSLATOR = """Domain: life sciences and regulatory documents, covering biology, pharmacy, clinical medicine, pharmacovigilance (PV), PK/PD, and FDA/ICH/CDE regulatory filings.
+ 
+-When writing suggestions, pay attention to whether there are ways to improve the translation's:
+-(i) accuracy (by correcting errors of addition, mistranslation, omission, or untranslated text),
+-(ii) fluency (by applying target language grammar, spelling and punctuation rules, and ensuring there are no unnatural phrasings),
+-(iii) style (by ensuring the translations reflect the style of the source text and takes into account academic and clinical context),
+-(iv) terminology (by ensuring terminology use is strictly consistent with official ICH/FDA/CDE technical language and reflects the source text domain).
++Prioritize a faithful, accurate and complete translation over stylistic polish.
+ 
+-Write a list of specific, helpful and constructive suggestions for improving the translation.
+-Each suggestion should address one specific part of the translation.
+-Output ONLY the suggestions and nothing else."""
++Rules:
++1. Completeness and accuracy: Translate every element precisely. Do not skip, omit, expand, infer or summarize, regardless of length. Prioritize ICH/FDA/CDE standard terminology.
++2. Context-sensitive terminology: Differentiate by the subject of the text.
++   - Animal/non-clinical: use terms such as "sacrifice/euthanize/necropsy" (处死/解剖), keep weight-standardized doses (e.g., mg/kg), and use "经口给药" for oral dosing (when translating into Chinese).
++   - Human/clinical (patients/subjects): avoid animal endpoint terms, keep fixed doses (e.g., 10 mg QD), and use "口服" for oral dosing (when translating into Chinese).
++3. Non-translated elements: Keep abbreviations (e.g., SAE, AE), units of measurement (mg, mL, mmHg), and mathematical, chemical and trademark symbols exactly as in the source. Do not translate tags or placeholders; reproduce them exactly.
++4. Formatting:
++   - English to Chinese: convert dates to "yyyy年mm月dd日" (except inside IDs or codes). Use full-width punctuation. No space between Chinese characters and numbers or English letters. Keep a half-width space between a number and a following English unit (e.g., 5 mg). No space between a number and a Chinese unit (e.g., 5周).
++   - Chinese to English: convert dates to "dd-mmm-yyyy". Use standard English punctuation and spacing.
++5. Mixed language: Translate any portion that is not in the target language into the target language, and adjust the portions already in the target language for fluency.
++6. Register: Use a formal written register appropriate to regulatory documents; avoid colloquial expressions.
+ 
+-# ==================== Step 3: Improvement / Polish ====================
+-DEFAULT_IMPROVER = """You are a top-tier life sciences technical literature writing and review master with a deep background in biology, medicine, and pharmacy. You are an expert in FDA, USP, and EMA guidelines and core journal peer-review standards.
++Output only the translated text, without markdown wrappers."""
+ 
+-Your task is to carefully read the source text, the initial translation, and the expert reviewer's critique, and then provide a final translation with the ultimate goal of achieving "Polished Academic English" (or Polished Academic Chinese).
++OPTIMIZED_V1_REVIEWER = """Domain: life sciences and regulatory documents (biology, pharmacy, clinical medicine, pharmacovigilance, PK/PD, FDA/ICH/CDE filings). Review as a top-tier life sciences technical literature reviewer.
++
++The final translation should be highly accurate, natural and easy to understand, and should read like a fluently published original regulatory document in the target language.
++
++In addition to the checks listed in the task:
++- Fluency: also flag unnatural phrasing, not only unnecessary repetition.
++- Style: take the academic and clinical context into account, and require a formal written register; flag colloquial expressions.
++- Terminology: terminology must be strictly consistent with official ICH/FDA/CDE technical language and reflect the source text domain."""
++
++OPTIMIZED_V1_IMPROVER = """You are also a top-tier life sciences technical literature writing and review expert with a deep background in biology, medicine and pharmacy, familiar with FDA, USP and EMA guidelines and with core journal peer-review standards.
++
++The goal is a polished academic translation in the target language (Polished Academic English or Polished Academic Chinese).
+ 
+ Directives:
+-1. Absorb the Reviewer's Critique: Incorporate all valid corrections regarding terminology, omissions, and formatting from the critique.
+-2. Polished Academic Standard: 
++1. Incorporate all valid corrections from the expert suggestions regarding terminology, omissions and formatting.
++2. Polished academic standard:
+    - Polish the text for logical coherence and professional depth while strictly maintaining the original meaning.
+-   - Ensure Zero Grammar Errors: Tense, voice, and preposition usage must fully comply with academic and clinical norms.
+-   - Maintain a Scientific Tone that is objective, rigorous, and concise.
+-   - Terminology must strictly align with official FDA/ICH/USP/EMA/CDE technical language. Replace terms ONLY if there are scientific errors or regulatory non-compliance.
+-3. Format Polish: Ensure the final output strictly follows these rules:
+-   - EN to ZH: Use full-width punctuation. No space between Chinese characters and numbers/English letters. Keep a half-width space between a number and an English unit (e.g., 5 mg). Convert dates to "yyyy年mm月dd日".
+-   - ZH to EN: Use standard English punctuation and spacing. Convert dates to "dd-mmm-yyyy".
+-
+-Output ONLY the final, polished translated text without any conversational filler, introductory remarks, or markdown wrappers."""
++   - Ensure zero grammar errors: tense, voice and preposition usage must comply with academic and clinical norms.
++   - Maintain an objective, rigorous and concise scientific tone, in a formal written register.
++   - Terminology must align strictly with official FDA/ICH/USP/EMA/CDE technical language. Replace terms only if there are scientific errors or regulatory non-compliance.
++3. Formatting:
++   - English to Chinese: convert dates to "yyyy年mm月dd日" (except inside IDs or codes). Use full-width punctuation. No space between Chinese characters and numbers or English letters. Keep a half-width space between a number and a following English unit (e.g., 5 mg). No space between a number and a Chinese unit (e.g., 5周).
++   - Chinese to English: convert dates to "dd-mmm-yyyy". Use standard English punctuation and spacing.
++
++Output only the final translated text, without markdown wrappers."""
+diff --git a/ui_components.py b/ui_components.py
+index 94f0614..3246ebb 100644
+--- a/ui_components.py
++++ b/ui_components.py
+@@ -3,7 +3,8 @@ import json
+ import streamlit as st
+ import streamlit.components.v1 as components
+ from api_client import fetch_openai_models
+-from config_manager import save_config, record_model_usage
++from config_manager import save_config, record_model_usage, PROFILE_SCHEMA_VERSION
++from prompts import DEFAULT_PROFILE_NAME
+ 
+ def inject_custom_css():
+     st.markdown("""
+@@ -100,21 +101,22 @@ def show_settings_dialog():
+     st.markdown("---")
+     st.markdown("#### 2. Agent 3-Step Prompts 管理")
+     
++    st.caption("每个模板的内容是“附加规则”，会追加在该步骤 system 消息的角色句之后；任务说明与输入材料的模板固定使用参考项目的原文。“参考原版（默认）”没有附加规则，且不可编辑；想基于它或其他模板修改，请在下方“另存为新模板”。")
+     tab_t, tab_r, tab_i = st.tabs(["🗣️ Step 1: 初译", "🕵️‍♂️ Step 2: 审校", "✨ Step 3: 定稿"])
+     with tab_t:
+         t_names = list(st.session_state.translator_profiles.keys())
+         sel_t = st.selectbox("选择初译模板", options=t_names, index=t_names.index(st.session_state.active_t) if st.session_state.active_t in t_names else 0)
+-        t_text = st.text_area("编辑初译模板内容", value=st.session_state.translator_profiles[sel_t], height=180)
++        t_text = st.text_area("编辑初译附加规则", value=st.session_state.translator_profiles[sel_t], height=180, disabled=(sel_t == DEFAULT_PROFILE_NAME))
+         new_t_name = st.text_input("另存为新初译模板 (选填)")
+     with tab_r:
+         r_names = list(st.session_state.reviewer_profiles.keys())
+         sel_r = st.selectbox("选择审校模板", options=r_names, index=r_names.index(st.session_state.active_r) if st.session_state.active_r in r_names else 0)
+-        r_text = st.text_area("编辑审校模板内容", value=st.session_state.reviewer_profiles[sel_r], height=180)
++        r_text = st.text_area("编辑审校附加规则", value=st.session_state.reviewer_profiles[sel_r], height=180, disabled=(sel_r == DEFAULT_PROFILE_NAME))
+         new_r_name = st.text_input("另存为新审校模板 (选填)")
+     with tab_i:
+         i_names = list(st.session_state.improver_profiles.keys())
+         sel_i = st.selectbox("选择定稿模板", options=i_names, index=i_names.index(st.session_state.active_i) if st.session_state.active_i in i_names else 0)
+-        i_text = st.text_area("编辑定稿模板内容", value=st.session_state.improver_profiles[sel_i], height=180)
++        i_text = st.text_area("编辑定稿附加规则", value=st.session_state.improver_profiles[sel_i], height=180, disabled=(sel_i == DEFAULT_PROFILE_NAME))
+         new_i_name = st.text_input("另存为新定稿模板 (选填)")
+ 
+     if st.button("✅ 保存全部配置并生效", type="primary"):
+@@ -129,6 +131,6 @@ def show_settings_dialog():
+         st.session_state.active_i = new_i_name.strip() if new_i_name.strip() else sel_i
+         st.session_state.improver_profiles[st.session_state.active_i] = i_text
+             
+-        save_config({"api_config": {"active_env": st.session_state.active_env, "envs": st.session_state.api_envs, "current_model": st.session_state.selected_model}, "skills": {"translator_profiles": st.session_state.translator_profiles, "active_translator": st.session_state.active_t, "reviewer_profiles": st.session_state.reviewer_profiles, "active_reviewer": st.session_state.active_r, "improver_profiles": st.session_state.improver_profiles, "active_improver": st.session_state.active_i}})
++        save_config({"api_config": {"active_env": st.session_state.active_env, "envs": st.session_state.api_envs, "current_model": st.session_state.selected_model}, "skills": {"translator_profiles": st.session_state.translator_profiles, "active_translator": st.session_state.active_t, "reviewer_profiles": st.session_state.reviewer_profiles, "active_reviewer": st.session_state.active_r, "improver_profiles": st.session_state.improver_profiles, "active_improver": st.session_state.active_i, "profile_schema": PROFILE_SCHEMA_VERSION, "skills_legacy": st.session_state.skills_legacy}})
+         st.success("配置已保存并生效！")
+         st.rerun()

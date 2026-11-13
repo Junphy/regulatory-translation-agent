@@ -1,0 +1,12 @@
+# 本地配置：设置界面会把 API 密钥明文保存到这里，不要提交
+config.json
+
+# 环境变量与密钥
+.env
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/

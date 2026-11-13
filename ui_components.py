@@ -3,7 +3,8 @@ import json
 import streamlit as st
 import streamlit.components.v1 as components
 from api_client import fetch_openai_models
-from config_manager import save_config, record_model_usage
+from config_manager import save_config, record_model_usage, PROFILE_SCHEMA_VERSION
+from prompts import DEFAULT_PROFILE_NAME
 
 def inject_custom_css():
     st.markdown("""
@@ -100,21 +101,22 @@ def show_settings_dialog():
     st.markdown("---")
     st.markdown("#### 2. Agent 3-Step Prompts 管理")
     
+    st.caption("每个模板的内容是“附加规则”，会追加在该步骤 system 消息的角色句之后；任务说明与输入材料的模板固定使用参考项目的原文。“参考原版（默认）”没有附加规则，且不可编辑；想基于它或其他模板修改，请在下方“另存为新模板”。")
     tab_t, tab_r, tab_i = st.tabs(["🗣️ Step 1: 初译", "🕵️‍♂️ Step 2: 审校", "✨ Step 3: 定稿"])
     with tab_t:
         t_names = list(st.session_state.translator_profiles.keys())
         sel_t = st.selectbox("选择初译模板", options=t_names, index=t_names.index(st.session_state.active_t) if st.session_state.active_t in t_names else 0)
-        t_text = st.text_area("编辑初译模板内容", value=st.session_state.translator_profiles[sel_t], height=180)
+        t_text = st.text_area("编辑初译附加规则", value=st.session_state.translator_profiles[sel_t], height=180, disabled=(sel_t == DEFAULT_PROFILE_NAME))
         new_t_name = st.text_input("另存为新初译模板 (选填)")
     with tab_r:
         r_names = list(st.session_state.reviewer_profiles.keys())
         sel_r = st.selectbox("选择审校模板", options=r_names, index=r_names.index(st.session_state.active_r) if st.session_state.active_r in r_names else 0)
-        r_text = st.text_area("编辑审校模板内容", value=st.session_state.reviewer_profiles[sel_r], height=180)
+        r_text = st.text_area("编辑审校附加规则", value=st.session_state.reviewer_profiles[sel_r], height=180, disabled=(sel_r == DEFAULT_PROFILE_NAME))
         new_r_name = st.text_input("另存为新审校模板 (选填)")
     with tab_i:
         i_names = list(st.session_state.improver_profiles.keys())
         sel_i = st.selectbox("选择定稿模板", options=i_names, index=i_names.index(st.session_state.active_i) if st.session_state.active_i in i_names else 0)
-        i_text = st.text_area("编辑定稿模板内容", value=st.session_state.improver_profiles[sel_i], height=180)
+        i_text = st.text_area("编辑定稿附加规则", value=st.session_state.improver_profiles[sel_i], height=180, disabled=(sel_i == DEFAULT_PROFILE_NAME))
         new_i_name = st.text_input("另存为新定稿模板 (选填)")
 
     if st.button("✅ 保存全部配置并生效", type="primary"):
@@ -129,6 +131,6 @@ def show_settings_dialog():
         st.session_state.active_i = new_i_name.strip() if new_i_name.strip() else sel_i
         st.session_state.improver_profiles[st.session_state.active_i] = i_text
             
-        save_config({"api_config": {"active_env": st.session_state.active_env, "envs": st.session_state.api_envs, "current_model": st.session_state.selected_model}, "skills": {"translator_profiles": st.session_state.translator_profiles, "active_translator": st.session_state.active_t, "reviewer_profiles": st.session_state.reviewer_profiles, "active_reviewer": st.session_state.active_r, "improver_profiles": st.session_state.improver_profiles, "active_improver": st.session_state.active_i}})
+        save_config({"api_config": {"active_env": st.session_state.active_env, "envs": st.session_state.api_envs, "current_model": st.session_state.selected_model}, "skills": {"translator_profiles": st.session_state.translator_profiles, "active_translator": st.session_state.active_t, "reviewer_profiles": st.session_state.reviewer_profiles, "active_reviewer": st.session_state.active_r, "improver_profiles": st.session_state.improver_profiles, "active_improver": st.session_state.active_i, "profile_schema": PROFILE_SCHEMA_VERSION, "skills_legacy": st.session_state.skills_legacy}})
         st.success("配置已保存并生效！")
         st.rerun()
