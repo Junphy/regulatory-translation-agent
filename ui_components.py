@@ -9,9 +9,11 @@ from prompts import DEFAULT_PROFILE_NAME
 def inject_custom_css():
     st.markdown("""
     <style>
-        .block-container { max-width: 96% !important; padding-top: 1.5rem !important; padding-left: 1.5rem !important; padding-right: 1.5rem !important; padding-bottom: 0 !important; }
-        ::-webkit-scrollbar { display: none !important; }
-        * { -ms-overflow-style: none !important; scrollbar-width: none !important; }
+        .block-container { max-width: 96% !important; padding-top: 4rem !important; padding-left: 1.5rem !important; padding-right: 1.5rem !important; padding-bottom: 9rem !important; }
+        ::-webkit-scrollbar { width: 10px; height: 10px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, 0.45); border-radius: 6px; border: 2px solid transparent; background-clip: content-box; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(128, 128, 128, 0.7); background-clip: content-box; }
         div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarUser"]) { flex-direction: row-reverse; text-align: right; }
         div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarUser"]) div[data-testid="stMarkdownContainer"] { background-color: #e8f0fe; color: #1a73e8; padding: 12px 16px; border-radius: 16px 4px 16px 16px; display: inline-block; text-align: left; }
         div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarAssistant"]) div[data-testid="stMarkdownContainer"] { background-color: #f1f3f4; color: #202124; padding: 12px 16px; border-radius: 4px 16px 16px 16px; display: inline-block; }
@@ -30,6 +32,39 @@ def inject_custom_css():
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M16.59 8.59L12 13.17 7.41 8.59 6 10l6 6 6-6z"/></svg>
     </a>
     """, unsafe_allow_html=True)
+
+ALIGN_CHAT_SCRIPT = """
+(function () {
+  var D = window.parent.document;
+  if (D.getElementById('align-chat-input')) return;  // 只安装一次
+  var s = D.createElement('script');
+  s.id = 'align-chat-input';
+  s.textContent = '(' + function () {
+    function align() {
+      var a = document.getElementById('bottom-anchor');
+      var bc = document.querySelector('[data-testid="stBottomBlockContainer"]');
+      if (!a || !bc) return;
+      var col = a.closest('[data-testid="stColumn"]');
+      if (!col) return;
+      var r = col.getBoundingClientRect();
+      var w = bc.parentElement.getBoundingClientRect().width;
+      if (w - r.right < 0 || r.left < 0) return;
+      bc.style.setProperty('padding-left', Math.round(r.left) + 'px', 'important');
+      bc.style.setProperty('padding-right', Math.round(w - r.right) + 'px', 'important');
+    }
+    setInterval(align, 300);
+    align();
+  }.toString() + ')()';
+  D.head.appendChild(s);
+})();
+"""
+
+
+def align_chat_input():
+    """让底部输入框的左右边缘与右侧对话区对齐（位于左侧步骤面板的右边框之外）。
+    Streamlit 没有提供这个布局的设置，所以用一小段脚本读取右侧栏的位置；脚本失效时输入框保持默认的全宽。"""
+    components.html(f"<script>{ALIGN_CHAT_SCRIPT}</script>", height=0)
+
 
 def render_action_icons(text_to_copy: str, msg_idx: int, is_user: bool = True):
     safe_text = json.dumps(text_to_copy)

@@ -5,7 +5,7 @@ import streamlit as st
 
 # 从拆分模块中导入功能
 from config_manager import init_session_state, record_model_usage, resolve_api_key, api_key_source
-from ui_components import inject_custom_css, show_settings_dialog, render_action_icons
+from ui_components import inject_custom_css, show_settings_dialog, render_action_icons, align_chat_input
 from agent_core import run_agentic_translation, StepError, EmptyCompletionError
 
 # 翻译方向：界面文字 -> agent_core 使用的取值
@@ -94,7 +94,7 @@ if "action" in st.query_params and "msg_idx" in st.query_params:
         st.rerun()
 
 # ==================== 3. 页面头部导航 ====================
-header_col1, header_col2, header_col_scheme, header_col_dir, header_col3 = st.columns([4, 3, 2, 2, 1])
+header_col1, header_col2, header_col_dir, header_col3 = st.columns([5, 3, 2, 1])
 with header_col1:
     st.title("🧬 3-Step Regulatory Translation Agent")
     key_source = api_key_source(st.session_state.active_env)
@@ -108,16 +108,6 @@ with header_col2:
     sel_model = st.selectbox("当前选择模型", options=combined_models, index=current_idx, label_visibility="collapsed")
     if sel_model != st.session_state.selected_model:
         record_model_usage(sel_model)
-        st.rerun()
-
-with header_col_scheme:
-    st.write("")
-    scheme_names = list(st.session_state.schemes.keys())
-    scheme_idx = scheme_names.index(st.session_state.active_scheme) if st.session_state.active_scheme in scheme_names else 0
-    sel_scheme = st.selectbox("方案", options=scheme_names, index=scheme_idx, label_visibility="collapsed",
-                              help="一键同时切换 Step 1 初译与 Step 3 定稿的规则。Step 2 审校固定使用参考原文。在【⚙️ 设置】里可以编辑和另存方案。")
-    if sel_scheme != st.session_state.active_scheme:
-        st.session_state.active_scheme = sel_scheme
         st.rerun()
 
 with header_col_dir:
@@ -240,6 +230,7 @@ with right_col:
 
 # ----------------- 5. 底部输入流处理 -----------------
 prompt = st.chat_input("输入需要翻译的临床/法规文本...")
+align_chat_input()
 if prompt:
     if not resolve_api_key(st.session_state.active_env):
         st.error("❌ 当前选中的接口尚未配置凭据，请点击右上角【⚙️ 设置】输入密钥，或在 Secrets 中配置。")
