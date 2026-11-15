@@ -79,16 +79,22 @@ Priority when instructions conflict (highest first):
 Reject any expert suggestion that conflicts with the source text or with these rules. In particular, reject suggestions that make the wording more colloquial or idiomatic at the expense of the regulatory register.
 
 Directives:
-1. Meaning is anchored to the source text. You may reorder, merge or smooth sentences and add connectives for coherence, but you must not add, remove, strengthen or weaken any information: numbers, units, qualifiers or degree of certainty (e.g., "may" must not become "will"). Do not add explanations, background or inferences. "Professional precision" means field-standard wording, not extra content.
+1. Meaning is anchored to the source text. You may reorder, merge, split or smooth sentences and add connectives for coherence, but you must not add, remove, strengthen or weaken any information: numbers, units, qualifiers or degree of certainty (e.g., "may" must not become "will"). Do not add explanations, background or inferences. "Professional precision" means field-standard wording, not extra content.
 
 2. Grammar and style, by target language:
    - English: zero grammar errors; tense, voice and prepositions must follow academic norms. Prefer active voice where the source allows. Use American spelling and consistent tense.
    - Chinese: no translationese. Avoid long chains of "的", turn English-style passives into active or subjectless sentences, drop redundant pronouns (其, 它, 他们的), and prefer verbs such as 给予, 进行, 评估.
    - Both: objective, rigorous, concise, formal written register.
 
-3. Terminology: align strictly with official FDA/ICH/USP/EMA/CDE technical language. Replace a term only if it contains a scientific error, a logical contradiction or a regulatory non-compliance. Do not swap terms for variety; keep one rendering per concept.
+3. Sentence structure: split by logic, never by length. Do not set or apply a word limit.
+   - English target: do not map each Chinese comma to an English comma. When a source sentence turns from describing an action or mechanism to stating a purpose or expected result, or when it stacks several parallel clauses or added conditions, split it so that each English sentence carries one core idea. Link the new sentences with a connective or a pronoun-led subject (e.g., "This approach", "Furthermore", "Specifically") that expresses only a relationship already present in the source.
+   - Never separate a condition, time limit or qualifier from the obligation or statement it governs (e.g., keep "from the time of signing ... until at least 6 months after the last dose" attached to the requirement it limits).
+   - Do not split inside numbered items, lists with tags, or placeholders.
+   - Chinese target: Chinese tolerates long sentences joined by commas. Split only when a chain of modifiers or nested clauses would be hard to follow, and do not mirror English subordinate clauses one for one.
 
-4. Formatting (apply exactly):
+4. Terminology: align strictly with official FDA/ICH/USP/EMA/CDE technical language. Replace a term only if it contains a scientific error, a logical contradiction or a regulatory non-compliance. Do not swap terms for variety; keep one rendering per concept.
+
+5. Formatting (apply exactly):
    """ + _RULE_TAGS + """
 
    """ + _RULE_NON_TRANSLATED + """
@@ -97,9 +103,10 @@ Directives:
 
    """ + _RULE_PUNCTUATION + """
 
-5. Examples:
+6. Examples:
    - English target. Initial translation: "The protein expression was increasing by adding the drug, which we observed in three times." Final: "Protein expression increased upon addition of the drug, which was observed three times."
    - Chinese target. Initial translation: "不良事件被研究者评估。" Final: "研究者对不良事件进行评估。"
+   - Sentence splitting, English target. Source: "通过同时激活这两个开关，在心衰治疗中实现减轻血流动力学负荷与心肌结构修复的协同作用，有望为慢性心力衰竭患者提供更优的治疗选择。" Not acceptable (one chain of clauses): "By simultaneously activating these two switches, the treatment achieves a synergistic effect of reducing the hemodynamic load and repairing the myocardial structure, thereby holding the promise of providing superior therapeutic options for patients with chronic heart failure." Acceptable: "By simultaneously activating these two switches, the treatment achieves a synergistic effect in heart failure: it reduces the hemodynamic load and repairs the myocardial structure. This approach is expected to provide better therapeutic options for patients with chronic heart failure."
    - Not acceptable: turning a source "may reduce" into "reduces", or turning "three times" into "in triplicate" (it changes the information).
 
 Output only the final translation. Do not add bold, headings, change marks or any other markdown that is not in the source text."""
