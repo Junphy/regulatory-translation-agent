@@ -3,7 +3,7 @@ import json
 import streamlit as st
 import streamlit.components.v1 as components
 from api_client import fetch_openai_models
-from config_manager import save_config, record_model_usage, PROFILE_SCHEMA_VERSION
+from config_manager import save_config, record_model_usage, secret_api_key, PROFILE_SCHEMA_VERSION
 from prompts import DEFAULT_PROFILE_NAME
 
 def inject_custom_css():
@@ -80,15 +80,19 @@ def show_settings_dialog():
     curr_key = st.session_state.api_envs.get(edit_target, {}).get("key", "")
     
     url_input = st.text_input("接口地址 (Base URL)", value=curr_url, disabled=is_default)
-    key_input = st.text_input("API 凭据 / 密码", value=curr_key, type="password")
-    
+    key_input = st.text_input("API 凭据 / 密码", value=curr_key, type="password",
+                              help="仅在当前浏览器会话中保留，不会写入 config.json，刷新页面后需要重新输入。长期使用请在 Streamlit 的 Secrets 中配置。")
+    if secret_api_key(edit_target):
+        st.caption("✅ 已在 Secrets 中配置了该接口的密钥，这里留空即可。")
+    effective_key = key_input.strip() or secret_api_key(edit_target)
+
     col_btn1, col_btn2 = st.columns([1, 1])
     with col_btn1:
         if st.button("🧪 测试连接并获取模型列表"):
-            if not key_input.strip() or not url_input.strip(): st.warning("请填写完整的地址和凭据")
+            if not effective_key or not url_input.strip(): st.warning("请填写完整的地址和凭据")
             else:
                 with st.spinner("正在连通接口..."):
-                    success, result = fetch_openai_models(key_input.strip(), url_input.strip())
+                    success, result = fetch_openai_models(effective_key, url_input.strip())
                     if success: st.session_state.available_models = result; st.success(f"获取到 {len(result)} 个可用模型。")
                     else: st.error(f"拉取失败: {result}")
     with col_btn2:
@@ -99,38 +103,29 @@ def show_settings_dialog():
         final_model = manual_model.strip() if manual_model.strip() else selected
 
     st.markdown("---")
-    st.markdown("#### 2. Agent 3-Step Prompts 管理")
-    
-    st.caption("每个模板的内容是“附加规则”，会追加在该步骤 system 消息的角色句之后；任务说明与输入材料的模板固定使用参考项目的原文。“参考原版（默认）”没有附加规则，且不可编辑；想基于它或其他模板修改，请在下方“另存为新模板”。")
-    tab_t, tab_r, tab_i = st.tabs(["🗣️ Step 1: 初译", "🕵️‍♂️ Step 2: 审校", "✨ Step 3: 定稿"])
+    st.markdown("#### 2. 方案管理（Step 1 初译 + Step 3 定稿）")
+    st.caption("一个方案包含初译与定稿两份“附加规则”，会追加在对应步骤 system 消息的角色句之后；任务说明与输入材料的模板固定使用参考项目的原文。Step 2（审校）固定使用参考原文，不可编辑。页面顶部的“方案”下拉框可以一键同时切换两步。“参考原版（默认）”没有附加规则，且不可编辑；想基于它或其他方案修改，请在下方“另存为新方案”。")
+    scheme_names = list(st.session_state.schemes.keys())
+    sel_scheme = st.selectbox("选择方案", options=scheme_names, index=scheme_names.index(st.session_state.active_scheme) if st.session_state.active_scheme in scheme_names else 0)
+    is_default_scheme = (sel_scheme == DEFAULT_PROFILE_NAME)
+    tab_t, tab_i = st.tabs(["🗣️ Step 1: 初译", "✨ Step 3: 定稿"])
     with tab_t:
-        t_names = list(st.session_state.translator_profiles.keys())
-        sel_t = st.selectbox("选择初译模板", options=t_names, index=t_names.index(st.session_state.active_t) if st.session_state.active_t in t_names else 0)
-        t_text = st.text_area("编辑初译附加规则", value=st.session_state.translator_profiles[sel_t], height=180, disabled=(sel_t == DEFAULT_PROFILE_NAME))
-        new_t_name = st.text_input("另存为新初译模板 (选填)")
-    with tab_r:
-        r_names = list(st.session_state.reviewer_profiles.keys())
-        sel_r = st.selectbox("选择审校模板", options=r_names, index=r_names.index(st.session_state.active_r) if st.session_state.active_r in r_names else 0)
-        r_text = st.text_area("编辑审校附加规则", value=st.session_state.reviewer_profiles[sel_r], height=180, disabled=(sel_r == DEFAULT_PROFILE_NAME))
-        new_r_name = st.text_input("另存为新审校模板 (选填)")
+        t_text = st.text_area("编辑初译附加规则", value=st.session_state.schemes[sel_scheme]["translator"], height=180, disabled=is_default_scheme)
     with tab_i:
-        i_names = list(st.session_state.improver_profiles.keys())
-        sel_i = st.selectbox("选择定稿模板", options=i_names, index=i_names.index(st.session_state.active_i) if st.session_state.active_i in i_names else 0)
-        i_text = st.text_area("编辑定稿附加规则", value=st.session_state.improver_profiles[sel_i], height=180, disabled=(sel_i == DEFAULT_PROFILE_NAME))
-        new_i_name = st.text_input("另存为新定稿模板 (选填)")
+        i_text = st.text_area("编辑定稿附加规则", value=st.session_state.schemes[sel_scheme]["improver"], height=180, disabled=is_default_scheme)
+    new_scheme_name = st.text_input("另存为新方案 (选填)")
 
     if st.button("✅ 保存全部配置并生效", type="primary"):
         st.session_state.api_envs[edit_target] = {"url": url_input.strip(), "key": key_input.strip()}
         st.session_state.active_env = edit_target
         record_model_usage(final_model)
-        
-        st.session_state.active_t = new_t_name.strip() if new_t_name.strip() else sel_t
-        st.session_state.translator_profiles[st.session_state.active_t] = t_text
-        st.session_state.active_r = new_r_name.strip() if new_r_name.strip() else sel_r
-        st.session_state.reviewer_profiles[st.session_state.active_r] = r_text
-        st.session_state.active_i = new_i_name.strip() if new_i_name.strip() else sel_i
-        st.session_state.improver_profiles[st.session_state.active_i] = i_text
-            
-        save_config({"api_config": {"active_env": st.session_state.active_env, "envs": st.session_state.api_envs, "current_model": st.session_state.selected_model}, "skills": {"translator_profiles": st.session_state.translator_profiles, "active_translator": st.session_state.active_t, "reviewer_profiles": st.session_state.reviewer_profiles, "active_reviewer": st.session_state.active_r, "improver_profiles": st.session_state.improver_profiles, "active_improver": st.session_state.active_i, "profile_schema": PROFILE_SCHEMA_VERSION, "skills_legacy": st.session_state.skills_legacy}})
-        st.success("配置已保存并生效！")
+
+        target_scheme = new_scheme_name.strip() if new_scheme_name.strip() else sel_scheme
+        if target_scheme != DEFAULT_PROFILE_NAME:  # 默认方案固定为参考原版，不写入
+            st.session_state.schemes[target_scheme] = {"translator": t_text, "improver": i_text}
+        st.session_state.active_scheme = target_scheme
+
+        save_config({"api_config": {"active_env": st.session_state.active_env, "envs": st.session_state.api_envs, "current_model": st.session_state.selected_model}, "skills": {"schemes": st.session_state.schemes, "active_scheme": st.session_state.active_scheme, "profile_schema": PROFILE_SCHEMA_VERSION, "skills_legacy": st.session_state.skills_legacy}})
+        st.session_state.plaintext_key_warning = False  # 文件中的明文密钥已在保存时清除
+        st.success("配置已保存并生效！密钥不会写入文件，仅在本次会话中有效。")
         st.rerun()

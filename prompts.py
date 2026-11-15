@@ -1,26 +1,24 @@
 # prompts.py
 """
-三步流程的 profile 内容。
+“方案”：界面里一键切换的 prompt 组合，每个方案包含两份“附加规则”——第 1 步（初译）与第 3 步（定稿）。
 
-每个 profile 是“附加规则”：它会被追加在参考项目 system 消息的角色句之后，
-而任务说明与输入材料的模板（user 消息）固定使用参考项目的原文，写在 agent_core.py 里。
-所以 profile 里不需要再写角色介绍、任务说明或“只输出译文”之类的输出要求。
+附加规则会被追加在参考项目 system 消息的角色句之后，而任务说明与输入材料的模板（user 消息）
+固定使用参考项目的原文，写在 agent_core.py 里。所以附加规则里不需要再写角色介绍、
+任务说明或“只输出译文”之类的输出要求。
 
-- 参考原版（默认）：附加规则为空，发给模型的消息与参考项目逐字一致。
-- 医学版：面向生命科学与法规文本。第 1 步按 lifesci-translator 技能整理，第 2 步不加规则，
-  第 3 步按 english-regulatory-reviewer 技能中“Polished Academic”版本的思路整理。
+第 2 步（审校）没有附加规则，始终使用参考项目的原文，界面也不显示、不可编辑。
+agent_core.py 里仍保留审校步骤的规则参数，以后若需要调优，加回界面即可。
+
+- 参考原版（默认）：两份附加规则都为空，发给模型的消息与参考项目逐字一致。
+- 医学版：面向生命科学与法规文本。初译按 lifesci-translator 技能整理，
+  定稿按 english-regulatory-reviewer 技能中“Polished Academic”版本的思路整理。
 """
 
 DEFAULT_PROFILE_NAME = "参考原版（默认）"
 MEDICAL_NAME = "医学版"
 
-# 已退役的 profile 名称。读取配置时，这些名称下已保存的内容会被归档到 skills_legacy，不再出现在列表里。
+# 已退役的方案名称。读取配置时，这些名称下已保存的内容会被归档到 skills_legacy，不再出现在列表里。
 RETIRED_PROFILE_NAMES = ("优化版1",)
-
-# ==================== 参考原版（默认）：无附加规则 ====================
-DEFAULT_TRANSLATOR = ""
-DEFAULT_REVIEWER = ""
-DEFAULT_IMPROVER = ""
 
 # ==================== 医学版 ====================
 # 第 1 步与第 3 步共用同一套格式规则，所以只写一份、两处引用，保证逐字一致。
@@ -69,9 +67,6 @@ Prioritize a faithful, accurate and complete translation. The conventions below 
 
 Output only the translated text, without markdown wrappers."""
 
-# 第 2 步：医学版不加规则，与参考原版一致。
-MEDICAL_REVIEWER = ""
-
 MEDICAL_IMPROVER = """You are also a top-tier life sciences technical literature writing and review expert with a deep background in biology, medicine and pharmacy, an expert in FDA, USP, EMA and CDE guidelines and in core journal peer-review standards.
 
 Produce the final translation as polished academic text in the target language ("Polished Academic English" or "Polished Academic Chinese"): polished for logical coherence and professional precision, not merely corrected for grammar.
@@ -108,3 +103,10 @@ Directives:
    - Not acceptable: turning a source "may reduce" into "reduces", or turning "three times" into "in triplicate" (it changes the information).
 
 Output only the final translation. Do not add bold, headings, change marks or any other markdown that is not in the source text."""
+
+# ==================== 内置方案 ====================
+# translator：第 1 步（初译）的附加规则；improver：第 3 步（定稿）的附加规则。
+BUILTIN_SCHEMES = {
+    DEFAULT_PROFILE_NAME: {"translator": "", "improver": ""},
+    MEDICAL_NAME: {"translator": MEDICAL_TRANSLATOR, "improver": MEDICAL_IMPROVER},
+}

@@ -4,18 +4,45 @@
 
 三个步骤是对 andrewyng/translation-agent 的 src/translation_agent/utils.py
 中【单块路径】的复刻，user 模板与参考项目逐字一致。
-与参考项目的全部偏离都用 "# DEVIATION" 标出，共 5 处：
+与参考项目的全部偏离都用 "# DEVIATION" 标出，共 8 处：
 
 1. get_completion 增加 client 参数（支持界面里配置的 base_url 与 API Key），去掉未被三步使用的 json_mode。
 2. 三个 one_chunk_* 函数的第一个参数是 llm（见 make_llm），其余参数与参考一致，末尾多一个 extra_rules。
 3. extra_rules（界面里的 profile 内容）追加在 system 消息的角色句之后；为空时与参考完全一致。
 4. 不做分块：输入长度由使用者自行控制，因此没有 translate() 入口与 multichunk_* 函数。
-5. 语言方向由 detect_languages 自动判断，country 固定为空字符串（走参考项目的无 country 分支）。
+5. 语言方向默认由 detect_languages 自动判断，country 固定为空字符串（走参考项目的无 country 分支）。
+6. 模型返回空内容（None 或只有空白）时抛出 EmptyCompletionError。参考项目不处理，
+   会把 None 当作译文传给下一步，下一步的 prompt 里就会出现字面量 "None"。
+7. 三步各自包装：任何一步失败都抛出 StepError，说明是第几步失败，便于界面提示。
+8. run_agentic_translation 增加 direction_mode（auto/zh2en/en2zh），自动检测不准时可手动指定。
 """
 import re
 from typing import Callable, Tuple
 
 from openai import OpenAI
+
+
+class EmptyCompletionError(Exception):  # DEVIATION
+    """模型返回了空内容（常见于被安全策略拦截，或输出被截断）。"""
+
+    def __init__(self, model, finish_reason=None):
+        self.model = model
+        self.finish_reason = finish_reason
+        reason = f"finish_reason={finish_reason}" if finish_reason else "接口没有给出原因"
+        super().__init__(
+            f"模型 {model} 返回了空内容（{reason}）。常见原因：输入或输出被安全策略拦截，或输出被截断。"
+            "可以换一个模型，或缩短、拆分输入后重试。"
+        )
+
+
+class StepError(Exception):  # DEVIATION
+    """三步中某一步失败，带上步骤序号与原始异常。"""
+
+    def __init__(self, step, label, cause):
+        self.step = step
+        self.label = label
+        self.cause = cause
+        super().__init__(f"第 {step} 步（{label}）调用失败：{cause}")
 
 
 def get_completion(
@@ -36,7 +63,11 @@ def get_completion(
             {"role": "user", "content": prompt},
         ],
     )
-    return response.choices[0].message.content
+    choices = response.choices or []
+    content = choices[0].message.content if choices else None
+    if content is None or not str(content).strip():  # DEVIATION: 参考项目在此直接返回 content（可能是 None）
+        raise EmptyCompletionError(model, getattr(choices[0], "finish_reason", None) if choices else None)
+    return content
 
 
 def make_llm(client, model: str) -> Callable[..., str]:  # DEVIATION
@@ -209,7 +240,29 @@ def detect_languages(text: str) -> Tuple[str, str]:
     return "English", "Chinese"
 
 
-def run_agentic_translation(source_text, model_name, api_key, base_url, trans_skill, rev_skill, imp_skill):
+_DIRECTION_MODES = {  # DEVIATION: 手动指定方向；auto 表示使用 detect_languages
+    "auto": None,
+    "zh2en": ("Chinese", "English"),
+    "en2zh": ("English", "Chinese"),
+}
+
+
+def resolve_languages(text: str, direction_mode: str = "auto") -> Tuple[str, str]:
+    """返回 (source_lang, target_lang)。direction_mode 为 auto 时自动检测，否则按指定方向。"""
+
+    if direction_mode not in _DIRECTION_MODES:
+        raise ValueError(f"未知的翻译方向：{direction_mode}")
+    return _DIRECTION_MODES[direction_mode] or detect_languages(text)
+
+
+def _run_step(number, label, fn, *args):  # DEVIATION
+    try:
+        return fn(*args)
+    except Exception as exc:
+        raise StepError(number, label, exc) from exc
+
+
+def run_agentic_translation(source_text, model_name, api_key, base_url, trans_skill, rev_skill, imp_skill, direction_mode="auto"):
     """
     按参考项目 one_chunk_translate_text 的顺序依次执行三步。
 
@@ -220,20 +273,23 @@ def run_agentic_translation(source_text, model_name, api_key, base_url, trans_sk
     client = OpenAI(api_key=api_key, base_url=base_url)
     llm = make_llm(client, model_name)
 
-    source_lang, target_lang = detect_languages(source_text)
+    source_lang, target_lang = resolve_languages(source_text, direction_mode)
     country = ""  # DEVIATION: 固定为空，走参考项目的无 country 分支（不要求口语风格）
 
-    translation_1 = one_chunk_initial_translation(
+    translation_1 = _run_step(
+        1, "初译", one_chunk_initial_translation,
         llm, source_lang, target_lang, source_text, trans_skill
     )
 
-    reflection = one_chunk_reflect_on_translation(
+    reflection = _run_step(
+        2, "审校", one_chunk_reflect_on_translation,
         llm, source_lang, target_lang, source_text, translation_1, country, rev_skill
     )
 
-    translation_2 = one_chunk_improve_translation(
+    translation_2 = _run_step(
+        3, "定稿", one_chunk_improve_translation,
         llm, source_lang, target_lang, source_text, translation_1, reflection, imp_skill
     )
 
-    direction = _DIRECTION_LABELS[(source_lang, target_lang)]
+    direction = _DIRECTION_LABELS[(source_lang, target_lang)] + ("" if direction_mode == "auto" else "（手动指定）")
     return translation_1, reflection, translation_2, direction
