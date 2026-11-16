@@ -9,39 +9,58 @@ from prompts import DEFAULT_PROFILE_NAME
 def inject_custom_css():
     st.markdown("""
     <style>
-        .block-container { max-width: 96% !important; padding-top: 4rem !important; padding-left: 1.5rem !important; padding-right: 1.5rem !important; padding-bottom: 9rem !important; }
+        /* 可调参数：--main-max 是右侧对话区的最大宽度；--side-top 是左栏里“标题区”占用的高度，
+           两张步骤卡平分剩下的高度（改标题区高度时只需要改它） */
+        :root { --main-max: 62rem; --side-top: 9.75rem; }
+
+        /* ---------- 滚动条样式（整页滚动条保留，细而不抢眼） ---------- */
         ::-webkit-scrollbar { width: 10px; height: 10px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, 0.45); border-radius: 6px; border: 2px solid transparent; background-clip: content-box; }
         ::-webkit-scrollbar-thumb:hover { background: rgba(128, 128, 128, 0.7); background-clip: content-box; }
+
+        /* ---------- 右侧主区：只用整页这一条滚动条，内容居中，输入框与内容同宽 ---------- */
+        .block-container { max-width: var(--main-max) !important; margin-left: auto !important; margin-right: auto !important; padding: 3.75rem 2rem 6rem 2rem !important; }
+        /* 顶栏（模型/方向/设置）固定在对话区上方，对话滚动时不会消失；标记 .topbar-marker 在 app.py 的顶栏里 */
+        [data-testid="stMainBlockContainer"] > [data-testid="stVerticalBlock"] > :has(.topbar-marker) { position: sticky; top: 3.75rem; z-index: 100; background-color: #ffffff; padding-bottom: 8px; }
+        [data-testid="stBottomBlockContainer"] { max-width: var(--main-max) !important; margin-left: auto !important; margin-right: auto !important; padding-left: 2rem !important; padding-right: 2rem !important; padding-bottom: 2.75rem !important; }
+        div[data-testid="stChatInput"] { padding-top: 0 !important; padding-bottom: 0 !important; }
         div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarUser"]) { flex-direction: row-reverse; text-align: right; }
         div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarUser"]) div[data-testid="stMarkdownContainer"] { background-color: #e8f0fe; color: #1a73e8; padding: 12px 16px; border-radius: 16px 4px 16px 16px; display: inline-block; text-align: left; }
         div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarAssistant"]) div[data-testid="stMarkdownContainer"] { background-color: #f1f3f4; color: #202124; padding: 12px 16px; border-radius: 4px 16px 16px 16px; display: inline-block; }
-        .st-emotion-cache-1wivap2 { padding: 0 !important; } 
-        .step-card-content { padding: 1rem; overflow-y: auto; height: 100%; }
-        .sticky-header { position: sticky; top: 0; background-color: white; z-index: 10; border-bottom: 1px solid #e0e0e0; padding-bottom: 8px; margin-bottom: 12px; }
+
+        /* ---------- 左侧栏：全高、竖线分隔、自身不显示滚动条 ---------- */
+        section[data-testid="stSidebar"] { background-color: #f7f7f5; border-right: 1px solid #e3e3df; min-width: clamp(21rem, 27vw, 32rem); }
+        section[data-testid="stSidebar"] [data-testid="stSidebarHeader"] { height: 2.5rem; min-height: 2.5rem; }
+        section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] { padding-bottom: 0 !important; }
+        section[data-testid="stSidebar"] [data-testid="stSidebarContent"] { scrollbar-width: none; }
+        section[data-testid="stSidebar"] [data-testid="stSidebarContent"]::-webkit-scrollbar { display: none; }
+        .app-title { font-size: 1.05rem; font-weight: 700; color: #202124; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .step-card { height: calc((100vh - var(--side-top)) / 2); margin-bottom: 12px; padding: 0 1rem 1rem 1rem; overflow-y: auto; box-sizing: border-box; background: #ffffff; border: 1px solid #e3e3df; border-radius: 12px; scrollbar-width: none; }
+        .step-card::-webkit-scrollbar { display: none; }
+        .sticky-header { position: sticky; top: 0; background-color: white; z-index: 10; border-bottom: 1px solid #e0e0e0; padding-top: 1rem; padding-bottom: 8px; margin-bottom: 12px; }
         .sticky-header p { margin: 0 !important; font-size: 0.9rem; color: #5f6368; }
         .sticky-header strong { color: #202124; font-size: 1.05rem; }
-        div[data-testid="stChatInput"] { padding-top: 0 !important; padding-bottom: 4rem !important; }
-        .gemini-scroll-down { position: fixed; bottom: 190px; left: 50%; transform: translateX(-50%); width: 34px; height: 34px; background-color: #ffffff; border: 1px solid #e0e0e0; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,0.1); z-index: 99999; text-decoration: none !important; color: #5f6368 !important; transition: all 0.2s; }
+
+        /* ---------- “滚动到底部”按钮：位置由页面脚本跟随输入框；脚本失效时停在输入框上方 ---------- */
+        .gemini-scroll-down { position: fixed; bottom: 6.5rem; left: calc(50% + 12vw); transform: translateX(-50%); width: 34px; height: 34px; background-color: #ffffff; border: 1px solid #e0e0e0; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,0.1); z-index: 99999; text-decoration: none !important; color: #5f6368 !important; transition: all 0.2s; }
         .gemini-scroll-down:hover { background-color: #f8f9fa; box-shadow: 0 4px 10px rgba(0,0,0,0.15); color: #1a73e8 !important; }
         .gemini-scroll-down svg { width: 20px; height: 20px; fill: currentColor; }
-        [data-testid="stAppViewBlockContainer"] > div:first-child { display: none !important; }
     </style>
     <a href="#bottom-anchor" class="gemini-scroll-down" title="滚动到底部">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M16.59 8.59L12 13.17 7.41 8.59 6 10l6 6 6-6z"/></svg>
     </a>
     """, unsafe_allow_html=True)
 
-ALIGN_CHAT_SCRIPT = """
+PAGE_SCRIPT = """
 (function () {
   var D = window.parent.document;
-  if (D.getElementById('align-chat-input')) return;  // 只安装一次
+  if (D.getElementById('page-script')) return;  // 只安装一次
   var s = D.createElement('script');
-  s.id = 'align-chat-input';
+  s.id = 'page-script';
   s.textContent = '(' + function () {
+    // 1) “滚动到底部”按钮：水平居中于输入框，位于输入框正上方 12px（输入框位置随窗口和输入行数变化，所以用脚本跟随）
     function placeScrollBtn() {
-      // “滚动到底部”按钮：水平居中于输入框，位于输入框正上方（输入框随对话区对齐后位置会变，所以用脚本跟随）
       var btn = document.querySelector('.gemini-scroll-down');
       var ci = document.querySelector('[data-testid="stChatInput"]');
       var box = ci && ci.firstElementChild;
@@ -51,31 +70,29 @@ ALIGN_CHAT_SCRIPT = """
       btn.style.setProperty('left', Math.round((br.left + br.right) / 2) + 'px', 'important');
       btn.style.setProperty('bottom', Math.round(window.innerHeight - br.top + 12) + 'px', 'important');
     }
-    function align() {
-      var a = document.getElementById('bottom-anchor');
-      var bc = document.querySelector('[data-testid="stBottomBlockContainer"]');
-      if (!a || !bc) return;
-      var col = a.closest('[data-testid="stColumn"]');
-      if (!col) return;
-      var r = col.getBoundingClientRect();
-      var w = bc.parentElement.getBoundingClientRect().width;
-      if (w - r.right < 0 || r.left < 0) return;
-      bc.style.setProperty('padding-left', Math.round(r.left) + 'px', 'important');
-      bc.style.setProperty('padding-right', Math.round(w - r.right) + 'px', 'important');
+    // 2) 点按钮时平滑滚到页面最底部（整页滚动容器）
+    function pageScroller() {
+      return document.querySelector('[data-testid="stAppScrollToBottomContainer"]') || document.querySelector('[data-testid="stMain"]');
     }
-    function tick() { align(); placeScrollBtn(); }
-    setInterval(tick, 300);
-    tick();
+    document.addEventListener('click', function (e) {
+      var a = e.target.closest && e.target.closest('.gemini-scroll-down');
+      if (!a) return;
+      e.preventDefault();
+      var m = pageScroller();
+      if (m) m.scrollTo({ top: m.scrollHeight, behavior: 'smooth' });
+    });
+    setInterval(placeScrollBtn, 300);
+    placeScrollBtn();
   }.toString() + ')()';
   D.head.appendChild(s);
 })();
 """
 
 
-def align_chat_input():
-    """让底部输入框的左右边缘与右侧对话区对齐（位于左侧步骤面板的右边框之外）。
-    Streamlit 没有提供这个布局的设置，所以用一小段脚本读取右侧栏的位置；脚本失效时输入框保持默认的全宽。"""
-    components.html(f"<script>{ALIGN_CHAT_SCRIPT}</script>", height=0)
+def install_page_script():
+    """安装页面脚本：让“滚动到底部”按钮跟随输入框、点击时滚到底。
+    脚本失效时，按钮仍停在输入框上方（CSS 兜底），其余功能不受影响。"""
+    components.html(f"<script>{PAGE_SCRIPT}</script>", height=0)
 
 
 def render_action_icons(text_to_copy: str, msg_idx: int, is_user: bool = True):
