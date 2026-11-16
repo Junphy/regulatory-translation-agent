@@ -9,9 +9,9 @@ from prompts import DEFAULT_PROFILE_NAME
 def inject_custom_css():
     st.markdown("""
     <style>
-        /* 可调参数：--main-max 是右侧对话区的最大宽度；--side-top 是左栏里“标题区”占用的高度，
-           两张步骤卡平分剩下的高度（改标题区高度时只需要改它） */
-        :root { --main-max: 62rem; --side-top: 9.75rem; }
+        /* 可调参数：--main-max 是右侧对话区的最大宽度（none 表示不限制，用满右侧；想限制行宽可改成如 70rem，内容会居中）；
+           --side-top 是左栏里“标题区”占用的高度，两张步骤卡平分剩下的高度（改标题区高度时只需要改它） */
+        :root { --main-max: none; --side-top: 9.75rem; }
 
         /* ---------- 滚动条样式（整页滚动条保留，细而不抢眼） ---------- */
         ::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -30,11 +30,18 @@ def inject_custom_css():
         div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarAssistant"]) div[data-testid="stMarkdownContainer"] { background-color: #f1f3f4; color: #202124; padding: 12px 16px; border-radius: 4px 16px 16px 16px; display: inline-block; }
 
         /* ---------- 左侧栏：全高、竖线分隔、自身不显示滚动条 ---------- */
-        section[data-testid="stSidebar"] { background-color: #f7f7f5; border-right: 1px solid #e3e3df; min-width: clamp(21rem, 27vw, 32rem); }
-        section[data-testid="stSidebar"] [data-testid="stSidebarHeader"] { height: 2.5rem; min-height: 2.5rem; }
+        section[data-testid="stSidebar"] { background-color: #f7f7f5; border-right: 1px solid #e3e3df; }
         section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] { padding-bottom: 0 !important; }
         section[data-testid="stSidebar"] [data-testid="stSidebarContent"] { scrollbar-width: none; }
         section[data-testid="stSidebar"] [data-testid="stSidebarContent"]::-webkit-scrollbar { display: none; }
+        /* 桌面宽度：左栏固定展开并设最小宽度；折叠/展开按钮全部去掉（折叠后右侧不会变宽，只会露出一截左栏）。
+           窄屏（Streamlit 的手机布局，768px 及以下）保持默认的抽屉式左栏，仍可展开 */
+        @media (min-width: 769px) {
+            :root { --side-top: 8.25rem; }
+            section[data-testid="stSidebar"] { min-width: clamp(21rem, 27vw, 32rem); }
+            section[data-testid="stSidebar"] [data-testid="stSidebarHeader"] { height: 1rem; min-height: 1rem; }
+            [data-testid="stSidebarCollapseButton"], [data-testid="stSidebarCollapsedControl"], [data-testid="stExpandSidebarButton"] { display: none !important; }
+        }
         .app-title { font-size: 1.05rem; font-weight: 700; color: #202124; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .step-card { height: calc((100vh - var(--side-top)) / 2); margin-bottom: 12px; padding: 0 1rem 1rem 1rem; overflow-y: auto; box-sizing: border-box; background: #ffffff; border: 1px solid #e3e3df; border-radius: 12px; scrollbar-width: none; }
         .step-card::-webkit-scrollbar { display: none; }
