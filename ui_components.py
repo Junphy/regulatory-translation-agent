@@ -67,11 +67,17 @@ def align_chat_input():
 
 
 def render_action_icons(text_to_copy: str, msg_idx: int, is_user: bool = True):
-    safe_text = json.dumps(text_to_copy)
+    # 译文通过 <script> 里的 JSON 字面量传给按钮，不再拼进 HTML 属性（含撇号、引号、< > & 的文本会破坏属性）。
+    # 把 < > & 以及 U+2028/2029 转成 \u 转义，避免 "</script>" 或 "<!--" 提前结束脚本块。
+    safe_text = (
+        json.dumps(text_to_copy)
+        .replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+        .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+    )
     copy_svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>'
     edit_svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>'
     rewind_svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>'
-    
+
     html_content = f"""
     <style>
         body {{ margin: 0; padding: 0; background: transparent; overflow: hidden; display: flex; align-items: center; justify-content: flex-start; gap: 4px; }}
@@ -79,9 +85,41 @@ def render_action_icons(text_to_copy: str, msg_idx: int, is_user: bool = True):
         button:hover {{ background-color: #f1f3f4; color: #1a73e8; }}
         svg {{ width: 16px; height: 16px; fill: currentColor; }}
     </style>
-    <button id="btn_copy" title="复制" onclick='navigator.clipboard.writeText({safe_text}); const b = document.getElementById("btn_copy"); b.innerHTML = "<span style=\\"font-size:14px;color:#1a73e8;\\">✓</span>"; setTimeout(() => {{ b.innerHTML = `{copy_svg}`; }}, 1200);'>{copy_svg}</button>
+    <button id="btn_copy" title="复制" type="button">{copy_svg}</button>
+    <script>
+        (function() {{
+            const TEXT = {safe_text};
+            const btn = document.getElementById("btn_copy");
+            const ICON = btn.innerHTML;
+            function fallbackCopy(t) {{
+                const ta = document.createElement("textarea");
+                ta.value = t;
+                ta.style.position = "fixed";
+                ta.style.opacity = "0";
+                document.body.appendChild(ta);
+                ta.select();
+                let ok = false;
+                try {{ ok = document.execCommand("copy"); }} catch (e) {{}}
+                document.body.removeChild(ta);
+                return ok;
+            }}
+            function flash(ok) {{
+                btn.textContent = ok ? "\\u2713" : "\\u2717";
+                btn.style.color = ok ? "#1a73e8" : "#d93025";
+                btn.style.fontSize = "14px";
+                setTimeout(function() {{ btn.innerHTML = ICON; btn.style.color = ""; btn.style.fontSize = ""; }}, 1200);
+            }}
+            btn.addEventListener("click", function() {{
+                if (navigator.clipboard && navigator.clipboard.writeText) {{
+                    navigator.clipboard.writeText(TEXT).then(function() {{ flash(true); }}, function() {{ flash(fallbackCopy(TEXT)); }});
+                }} else {{
+                    flash(fallbackCopy(TEXT));
+                }}
+            }});
+        }})();
+    </script>
     """
-    
+
     if is_user:
         html_content += f"""
         <button id="btn_edit" title="编辑原文" onclick='triggerQueryAction("edit", {msg_idx})'>{edit_svg}</button>
