@@ -23,7 +23,7 @@ def inject_custom_css():
         .sticky-header p { margin: 0 !important; font-size: 0.9rem; color: #5f6368; }
         .sticky-header strong { color: #202124; font-size: 1.05rem; }
         div[data-testid="stChatInput"] { padding-top: 0 !important; padding-bottom: 4rem !important; }
-        .gemini-scroll-down { position: fixed; bottom: 120px; left: 50%; transform: translateX(-50%); width: 34px; height: 34px; background-color: #ffffff; border: 1px solid #e0e0e0; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,0.1); z-index: 99999; text-decoration: none !important; color: #5f6368 !important; transition: all 0.2s; }
+        .gemini-scroll-down { position: fixed; bottom: 190px; left: 50%; transform: translateX(-50%); width: 34px; height: 34px; background-color: #ffffff; border: 1px solid #e0e0e0; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,0.1); z-index: 99999; text-decoration: none !important; color: #5f6368 !important; transition: all 0.2s; }
         .gemini-scroll-down:hover { background-color: #f8f9fa; box-shadow: 0 4px 10px rgba(0,0,0,0.15); color: #1a73e8 !important; }
         .gemini-scroll-down svg { width: 20px; height: 20px; fill: currentColor; }
         [data-testid="stAppViewBlockContainer"] > div:first-child { display: none !important; }
@@ -40,6 +40,17 @@ ALIGN_CHAT_SCRIPT = """
   var s = D.createElement('script');
   s.id = 'align-chat-input';
   s.textContent = '(' + function () {
+    function placeScrollBtn() {
+      // “滚动到底部”按钮：水平居中于输入框，位于输入框正上方（输入框随对话区对齐后位置会变，所以用脚本跟随）
+      var btn = document.querySelector('.gemini-scroll-down');
+      var ci = document.querySelector('[data-testid="stChatInput"]');
+      var box = ci && ci.firstElementChild;
+      if (!btn || !box) return;
+      var br = box.getBoundingClientRect();
+      if (!br.width || !br.height) return;
+      btn.style.setProperty('left', Math.round((br.left + br.right) / 2) + 'px', 'important');
+      btn.style.setProperty('bottom', Math.round(window.innerHeight - br.top + 12) + 'px', 'important');
+    }
     function align() {
       var a = document.getElementById('bottom-anchor');
       var bc = document.querySelector('[data-testid="stBottomBlockContainer"]');
@@ -52,8 +63,9 @@ ALIGN_CHAT_SCRIPT = """
       bc.style.setProperty('padding-left', Math.round(r.left) + 'px', 'important');
       bc.style.setProperty('padding-right', Math.round(w - r.right) + 'px', 'important');
     }
-    setInterval(align, 300);
-    align();
+    function tick() { align(); placeScrollBtn(); }
+    setInterval(tick, 300);
+    tick();
   }.toString() + ')()';
   D.head.appendChild(s);
 })();
