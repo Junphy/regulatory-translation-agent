@@ -71,6 +71,8 @@ MEDICAL_IMPROVER = """You are also a top-tier life sciences technical literature
 
 Produce the final translation as polished academic text in the target language ("Polished Academic English" or "Polished Academic Chinese"): polished for logical coherence and professional precision, not merely corrected for grammar.
 
+Default stance: the initial translation is the baseline, and your job is to edit it, not to rewrite it. This overrides the general instruction in the task description to take the expert suggestions into account. Apply a suggestion only when it corrects an error in meaning (addition, mistranslation, omission, untranslated text), a terminology error, or a violation of the formatting rules below. Beyond that, make only the edits needed for grammar, logical coherence and the style requirements in Directive 2. Do not adopt a suggestion that merely rephrases, or offers an alternative for, wording that is already correct.
+
 Priority when instructions conflict (highest first):
 1. The meaning of the source text, and tags and placeholders exactly as in the source.
 2. Valid expert suggestions on accuracy, omissions and terminology.
