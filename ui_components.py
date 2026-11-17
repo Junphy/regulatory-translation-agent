@@ -5,6 +5,8 @@ import streamlit.components.v1 as components
 from api_client import fetch_openai_models
 from config_manager import save_config, record_model_usage, secret_api_key, PROFILE_SCHEMA_VERSION
 from prompts import DEFAULT_PROFILE_NAME
+import history_export as hx
+from datetime import datetime, timezone
 
 def inject_custom_css():
     st.markdown("""
@@ -21,8 +23,11 @@ def inject_custom_css():
 
         /* ---------- 右侧主区：只用整页这一条滚动条，内容居中，输入框与内容同宽 ---------- */
         .block-container { max-width: var(--main-max) !important; margin-left: auto !important; margin-right: auto !important; padding: 3.75rem 2rem 6rem 2rem !important; }
-        /* 顶栏（模型/方向/设置）固定在对话区上方，对话滚动时不会消失；标记 .topbar-marker 在 app.py 的顶栏里 */
-        [data-testid="stMainBlockContainer"] > [data-testid="stVerticalBlock"] > :has(.topbar-marker) { position: sticky; top: 3.75rem; z-index: 100; background-color: #ffffff; padding-bottom: 8px; }
+        /* 顶栏（设置/模型/方向）：标记 .topbar-marker 在 app.py 的顶栏里。
+           窄屏：吸顶在对话区上方；桌面宽度：固定到页眉那一行（见下面的媒体查询） */
+        @media (max-width: 768px) {
+            [data-testid="stMainBlockContainer"] > [data-testid="stVerticalBlock"] > :has(.topbar-marker) { position: sticky; top: 3.75rem; z-index: 100; background-color: #ffffff; padding-bottom: 8px; }
+        }
         [data-testid="stBottomBlockContainer"] { max-width: var(--main-max) !important; margin-left: auto !important; margin-right: auto !important; padding-left: 2rem !important; padding-right: 2rem !important; padding-bottom: 2.75rem !important; }
         div[data-testid="stChatInput"] { padding-top: 0 !important; padding-bottom: 0 !important; }
         div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarUser"]) { flex-direction: row-reverse; text-align: right; }
@@ -41,6 +46,13 @@ def inject_custom_css():
             section[data-testid="stSidebar"] { min-width: clamp(21rem, 27vw, 32rem); }
             section[data-testid="stSidebar"] [data-testid="stSidebarHeader"] { height: 1rem; min-height: 1rem; }
             [data-testid="stSidebarCollapseButton"], [data-testid="stSidebarCollapsedControl"], [data-testid="stExpandSidebarButton"] { display: none !important; }
+        }
+        /* 标记元素只供 CSS 定位，不显示，也不占高度（否则同一列里的设置按钮会比两个下拉框低一行） */
+        [data-testid="stElementContainer"]:has(.topbar-marker) { display: none !important; }
+        @media (min-width: 769px) {
+            /* 左边缘与对话区对齐（--bar-left 由页面脚本按输入框位置设置，脚本失效时用估算值）；右边给 Share/Deploy 等工具栏图标留 14rem。
+               z-index 只比页眉高一点，弹窗和下拉菜单仍然盖在它上面 */
+            [data-testid="stMainBlockContainer"] > [data-testid="stVerticalBlock"] > :has(.topbar-marker) { position: fixed !important; top: 10px; left: var(--bar-left, calc(clamp(21rem, 27vw, 32rem) + 2rem)); width: max(18rem, min(34rem, calc(100vw - var(--bar-left, 24rem) - 14rem))); z-index: 999991; margin: 0; }
         }
         .app-title { font-size: 1.05rem; font-weight: 700; color: #202124; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .step-card { height: calc((100vh - var(--side-top)) / 2); margin-bottom: 12px; padding: 0 1rem 1rem 1rem; overflow-y: auto; box-sizing: border-box; background: #ffffff; border: 1px solid #e3e3df; border-radius: 12px; scrollbar-width: none; }
@@ -71,9 +83,11 @@ PAGE_SCRIPT = """
       var btn = document.querySelector('.gemini-scroll-down');
       var ci = document.querySelector('[data-testid="stChatInput"]');
       var box = ci && ci.firstElementChild;
-      if (!btn || !box) return;
+      if (!box) return;
       var br = box.getBoundingClientRect();
       if (!br.width || !br.height) return;
+      document.documentElement.style.setProperty('--bar-left', Math.round(br.left) + 'px');  // 顶栏与对话区左边缘对齐
+      if (!btn) return;
       btn.style.setProperty('left', Math.round((br.left + br.right) / 2) + 'px', 'important');
       btn.style.setProperty('bottom', Math.round(window.innerHeight - br.top + 12) + 'px', 'important');
     }
@@ -172,6 +186,12 @@ def render_action_icons(text_to_copy: str, msg_idx: int, is_user: bool = True):
         """
     components.html(html_content, height=30, width=120 if is_user else 40)
 
+def _clear_runs_and_confirm():
+    """按钮回调：在复选框创建之前运行，所以可以在这里把“确认清空”复选框复位。"""
+    hx.clear_runs()
+    st.session_state.export_confirm_clear = False
+
+
 @st.dialog("⚙️ 系统与配置", width="large")
 def show_settings_dialog():
     st.markdown("#### 1. API 接口与凭据管理")
@@ -213,7 +233,7 @@ def show_settings_dialog():
 
     st.markdown("---")
     st.markdown("#### 2. 方案管理（Step 1 初译 + Step 3 定稿）")
-    st.caption("一个方案包含初译与定稿两份“附加规则”，会追加在对应步骤 system 消息的角色句之后；任务说明与输入材料的模板固定使用参考项目的原文。Step 2（审校）固定使用参考原文，不可编辑。页面顶部的“方案”下拉框可以一键同时切换两步。“参考原版（默认）”没有附加规则，且不可编辑；想基于它或其他方案修改，请在下方“另存为新方案”。")
+    st.caption("一个方案包含初译与定稿两份“附加规则”，会追加在对应步骤 system 消息的角色句之后；任务说明与输入材料的模板固定使用参考项目的原文。Step 2（审校）固定使用参考原文，不可编辑。在下方选好方案并点“保存全部配置并生效”后，初译与定稿两步会同时切换；左侧 Step 1 面板会显示当前方案。“参考原版（默认）”没有附加规则，且不可编辑；想基于它或其他方案修改，请在下方“另存为新方案”。")
     scheme_names = list(st.session_state.schemes.keys())
     sel_scheme = st.selectbox("选择方案", options=scheme_names, index=scheme_names.index(st.session_state.active_scheme) if st.session_state.active_scheme in scheme_names else 0)
     is_default_scheme = (sel_scheme == DEFAULT_PROFILE_NAME)
@@ -238,3 +258,28 @@ def show_settings_dialog():
         st.session_state.plaintext_key_warning = False  # 文件中的明文密钥已在保存时清除
         st.success("配置已保存并生效！密钥不会写入文件，仅在本次会话中有效。")
         st.rerun()
+
+    st.markdown("---")
+    st.markdown("#### 3. 导出评估记录")
+    total, failed, cases = hx.run_count()
+    st.caption("每次调用（成功或失败）都会追加一条记录，回溯重译、编辑原文都不会删除之前的运行，所以同一条原文用不同方案多次运行的结果可以放在一起对比。"
+               "记录只保存在当前浏览器会话里，刷新页面或会话过期就会丢失，请在测试完成后及时下载；不含 API 密钥，也不写入 config.json。"
+               "每次运行会记下方案名与规则版本号（规则文字有任何改动，版本号就变），导出文件末尾附各版本的规则全文。")
+    st.markdown(f"当前已记录 **{total}** 次运行（其中失败 {failed} 次），涉及 **{cases}** 条不同原文。")
+    ex_failed = st.checkbox("包含调用失败的运行", value=False, key="export_include_failed")
+    ex_rules = st.checkbox("附上方案规则全文", value=True, key="export_include_rules")
+    runs = st.session_state.get(hx.LOG_KEY, [])
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
+    dc1, dc2, dc3 = st.columns([2, 2, 2])
+    with dc1:
+        st.download_button("⬇️ 下载 Markdown（便于粘贴评估）", data=hx.build_markdown(runs, ex_failed, ex_rules).encode("utf-8"),
+                           file_name=f"translation-eval-{stamp}.md", mime="text/markdown", on_click="ignore",
+                           disabled=total == 0, key="dl_md")
+    with dc2:
+        st.download_button("⬇️ 下载 JSON（完整字段）", data=hx.build_json(runs, ex_failed, ex_rules).encode("utf-8"),
+                           file_name=f"translation-eval-{stamp}.json", mime="application/json", on_click="ignore",
+                           disabled=total == 0, key="dl_json")
+    with dc3:
+        confirm = st.checkbox("确认清空", value=False, key="export_confirm_clear", disabled=total == 0)
+        st.button("🗑️ 清空运行记录（不影响对话）", disabled=not confirm or total == 0, key="export_clear",
+                  on_click=_clear_runs_and_confirm)

@@ -95,8 +95,9 @@ def _build_schemes(saved):
 
 
 def _valid_active(name, schemes):
-    """激活项指向不存在的方案时回退到默认，避免用名字取方案时出错。"""
-    return name if name in schemes else DEFAULT_PROFILE_NAME
+    """没有保存过、或激活项指向不存在的方案时，回退到医学版（内置方案始终存在，避免用名字取方案时出错）。
+    已经保存过激活方案的配置不受影响：保存的是参考原版，就仍是参考原版。"""
+    return name if name in schemes else MEDICAL_NAME
 
 DEFAULT_ENV_NAME = "Gemini 原生接口 (默认)"
 

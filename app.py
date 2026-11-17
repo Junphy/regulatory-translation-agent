@@ -1,4 +1,5 @@
 import html
+import time
 
 import openai
 import streamlit as st
@@ -7,6 +8,7 @@ import streamlit as st
 from config_manager import init_session_state, record_model_usage, resolve_api_key, api_key_source
 from ui_components import inject_custom_css, show_settings_dialog, render_action_icons, install_page_script
 from agent_core import run_agentic_translation, StepError, EmptyCompletionError
+from history_export import log_run
 
 # 翻译方向：界面文字 -> agent_core 使用的取值
 DIRECTION_OPTIONS = {"自动检测": "auto", "中译英": "zh2en", "英译中": "en2zh"}
@@ -52,11 +54,15 @@ def describe_error(exc, api_key):
 
 
 def run_translation(text):
-    """调用三步翻译。成功返回 (结果, None)，失败返回 (None, 中文错误说明)。"""
+    """调用三步翻译。成功返回 (结果, None)，失败返回 (None, 中文错误说明)。
+    每次调用（成功或失败）都会追加一条运行记录，供设置里的“导出评估记录”使用。"""
     env_name = st.session_state.active_env
     env = st.session_state.api_envs.get(env_name, {})
     key = resolve_api_key(env_name)
-    scheme = st.session_state.schemes[st.session_state.active_scheme]
+    scheme_name = st.session_state.active_scheme
+    scheme = st.session_state.schemes[scheme_name]
+    started = time.monotonic()
+    result, err = None, None
     try:
         result = run_agentic_translation(
             text, st.session_state.selected_model, key, env.get("url", ""),
@@ -66,8 +72,10 @@ def run_translation(text):
             DIRECTION_OPTIONS[st.session_state.direction_mode],
         )
     except Exception as exc:  # noqa: BLE001  任何失败都转成界面提示，不让页面崩溃
-        return None, describe_error(exc, key)
-    return result, None
+        err = describe_error(exc, key)
+    log_run(text, scheme_name, scheme, st.session_state.selected_model, env_name,
+            st.session_state.direction_mode, result, err, time.monotonic() - started)
+    return (result, None) if err is None else (None, err)
 
 
 # ==================== 1. 页面初始化与 CSS 注入 ====================
@@ -133,9 +141,12 @@ with st.sidebar:
     ''', unsafe_allow_html=True)
 
 # ==================== 4. 右侧主区：顶栏 + 对话流（只用整页这一条滚动条） ====================
-top_pad, top_model, top_dir, top_settings = st.columns([5, 3, 2, 1.4])
-with top_pad:
-    st.markdown('<span class="topbar-marker"></span>', unsafe_allow_html=True)  # 供 CSS 找到这一行并固定在顶部
+# 这一行在桌面宽度下由 CSS 固定到页眉行（设置按钮在最左），窄屏则吸顶显示
+top_settings, top_model, top_dir = st.columns([1.3, 3, 2])
+with top_settings:
+    st.markdown('<span class="topbar-marker"></span>', unsafe_allow_html=True)  # 供 CSS 找到这一行
+    if st.button("⚙️ 设置"):
+        show_settings_dialog()
 with top_model:
     hist_ids = [m["id"] for m in st.session_state.model_history]
     combined_models = list(dict.fromkeys(hist_ids + st.session_state.available_models))
@@ -148,10 +159,6 @@ with top_model:
 with top_dir:
     st.selectbox("翻译方向", options=list(DIRECTION_OPTIONS), key="direction_mode", label_visibility="collapsed",
                  help="默认自动检测。判断不准时（例如中文里夹了大量英文药名），可手动指定方向。")
-
-with top_settings:
-    if st.button("⚙️ 设置"):
-        show_settings_dialog()
 
 if st.session_state.get("plaintext_key_warning"):
     st.warning("检测到 config.json 里保存过明文密钥，本版本不再读取它。请在【⚙️ 设置】里重新输入密钥（仅本次会话有效），或改用 Secrets 长期保存；点击“保存全部配置并生效”后，文件中的明文密钥会被清除。")
